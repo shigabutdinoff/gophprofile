@@ -33,3 +33,17 @@ type ProcessingOp struct {
 func (s *Service) PublishUploadEvent(ctx context.Context, avatarID, userID, s3Key string) error {
 	return s.publisher.Publish(ctx, "avatars.exchange", "avatar.uploaded", AvatarUploadEvent{avatarID, userID, s3Key})
 }
+
+// AvatarDeleteEvent это событие удаления аватарки в форме сообщения брокера.
+type AvatarDeleteEvent struct {
+	// AvatarID содержит UUID аватарки.
+	AvatarID string `json:"avatar_id"`
+	// S3Keys содержит ключи файлов аватарки в хранилище.
+	S3Keys []string `json:"s3_keys"`
+}
+
+// PublishDeleteEvent публикует событие удаления файлов s3Keys аватарки
+// avatarID.
+func (s *Service) PublishDeleteEvent(ctx context.Context, avatarID string, s3Keys []string) error {
+	return s.publisher.Publish(ctx, "avatars.exchange", "avatar.deleted", AvatarDeleteEvent{avatarID, s3Keys})
+}

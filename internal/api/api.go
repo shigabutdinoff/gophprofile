@@ -6,8 +6,10 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/httprate"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 	"github.com/shigabutdinoff/gophprofile/web"
@@ -19,8 +21,9 @@ type handler struct {
 	svc *avatar.Service
 }
 
-// New собирает обработчик маршрутов загрузки и чтения аватарок над svc
-// и страницы загрузки по корню. Состояние служб отдаёт health.
+// New собирает обработчик маршрутов загрузки, чтения и удаления аватарок
+// над svc и страницы загрузки по корню. Состояние служб отдаёт health.
+// С одного IP принимается не больше 100 запросов в минуту.
 func New(svc *avatar.Service, health http.Handler) http.Handler {
 	h := handler{svc: svc}
 	r := chi.NewRouter()
@@ -31,7 +34,9 @@ func New(svc *avatar.Service, health http.Handler) http.Handler {
 	r.Get("/api/v1/avatars/{id}/metadata", h.metadata)
 	r.Get("/api/v1/users/{user_id}/avatars", h.list)
 	r.Get("/api/v1/users/{user_id}/avatar", h.file)
-	return http.MaxBytesHandler(r, avatar.MaxSize+(1<<20))
+	r.Delete("/api/v1/avatars/{id}", h.remove)
+	r.Delete("/api/v1/users/{user_id}/avatar", h.remove)
+	return httprate.LimitByIP(100, time.Minute)(http.MaxBytesHandler(r, avatar.MaxSize+(1<<20)))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -52,6 +57,11 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, avatar.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Avatar not found"})
+	case errors.Is(err, avatar.ErrForbidden):
+		writeJSON(w, http.StatusForbidden, struct {
+			Error   string `json:"error"`
+			Details string `json:"details"`
+		}{"Forbidden", "You can only delete your own avatars"})
 	case errors.Is(err, avatar.ErrInvalidFormat):
 		writeJSON(w, http.StatusBadRequest, struct {
 			Error   string `json:"error"`

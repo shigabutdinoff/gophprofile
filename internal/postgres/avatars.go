@@ -53,9 +53,19 @@ func (r *Avatars) List(ctx context.Context, userID string, limit int) ([]avatar.
 // которая ещё в обработке. Иначе возвращает avatar.ErrDone.
 func (r *Avatars) UpdateProcessingStatus(ctx context.Context, id string, status avatar.Status, keys map[string]string) error {
 	tag, err := r.db.Exec(ctx, `UPDATE avatars SET processing_status = $2, thumbnail_s3_keys = $3, updated_at = now()
-		WHERE id = $1 AND processing_status = 'processing'`, id, string(status), keys)
+		WHERE id = $1 AND processing_status = 'processing' AND deleted_at IS NULL`, id, string(status), keys)
 	if err == nil && tag.RowsAffected() == 0 {
 		err = avatar.ErrDone
+	}
+	return err
+}
+
+// MarkDeleted помечает удалённой аватарку id. Если записи нет или она уже
+// помечена, возвращает avatar.ErrNotFound.
+func (r *Avatars) MarkDeleted(ctx context.Context, id string) error {
+	tag, err := r.db.Exec(ctx, "UPDATE avatars SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL", id)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = avatar.ErrNotFound
 	}
 	return err
 }

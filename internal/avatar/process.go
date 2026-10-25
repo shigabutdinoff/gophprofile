@@ -15,7 +15,10 @@ var thumbnails = []ProcessingOp{{100, 100}, {300, 300}}
 // ErrDone, а картинка, которую нельзя обработать, ошибку с ErrPermanent.
 func (s *Service) HandleUploadEvent(ctx context.Context, e AvatarUploadEvent) error {
 	a, err := s.repo.GetAvatar(ctx, e.AvatarID)
-	if errors.Is(err, ErrNotFound) || err == nil && a.Status != StatusProcessing {
+	if errors.Is(err, ErrNotFound) {
+		return s.gone(ctx, e.AvatarID)
+	}
+	if err == nil && a.Status != StatusProcessing {
 		return ErrDone
 	}
 	if err != nil {
@@ -44,7 +47,7 @@ func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessE
 	keys := map[string]string{}
 	for _, op := range e.Operations {
 		size := fmt.Sprintf("%dx%d", op.Width, op.Height)
-		keys[size] = fmt.Sprintf("thumbnails/%s/%s.jpg", e.AvatarID, size)
+		keys[size] = thumbKey(e.AvatarID, op)
 		thumb, err := encode(Resize(img, op.Width, op.Height), "jpeg")
 		if err == nil {
 			err = s.files.Upload(ctx, keys[size], thumb)
@@ -53,7 +56,32 @@ func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessE
 			return err
 		}
 	}
-	return s.repo.UpdateProcessingStatus(ctx, e.AvatarID, StatusCompleted, keys)
+	err := s.repo.UpdateProcessingStatus(ctx, e.AvatarID, StatusCompleted, keys)
+	if errors.Is(err, ErrDone) {
+		_, err = s.repo.GetAvatar(ctx, e.AvatarID)
+		if errors.Is(err, ErrNotFound) {
+			return s.gone(ctx, e.AvatarID)
+		}
+		if err == nil {
+			err = ErrDone
+		}
+	}
+	return err
+}
+
+func (s *Service) gone(ctx context.Context, id string) error {
+	keys := make([]string, 0, len(thumbnails))
+	for _, op := range thumbnails {
+		keys = append(keys, thumbKey(id, op))
+	}
+	if err := s.drop(ctx, keys); err != nil {
+		return err
+	}
+	return ErrDone
+}
+
+func thumbKey(id string, op ProcessingOp) string {
+	return fmt.Sprintf("thumbnails/%s/%dx%d.jpg", id, op.Width, op.Height)
 }
 
 // Fail ставит StatusFailed аватарке id, если она ещё в обработке.

@@ -36,9 +36,6 @@ func Convert(ctx context.Context, a Avatar, data []byte, format string) ([]byte,
 	return out, mime, err
 }
 
-// slot ограничивает перекодирование одной картинкой за раз: картинка в
-// MaxPixels занимает больше гигабайта памяти.
-// ponytail: один слот на процесс, больше слотов, когда памяти хватит.
 var slot = make(chan struct{}, 1)
 
 func acquire(ctx context.Context, a Avatar) (func(), error) {
@@ -69,13 +66,10 @@ func transcode(ctx context.Context, a Avatar, data []byte, format string, change
 	return encode(change(img), format)
 }
 
-// decode разбирает картинку и поворачивает её по EXIF Orientation.
 func decode(data []byte) (image.Image, error) {
 	return imaging.Decode(bytes.NewReader(data), imaging.AutoOrientation(true))
 }
 
-// onWhite кладёт картинку на белый фон без копии пикселей: JPEG не знает
-// прозрачности.
 type onWhite struct{ image.Image }
 
 func (onWhite) ColorModel() color.Model { return color.RGBA64Model }

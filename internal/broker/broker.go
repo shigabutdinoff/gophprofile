@@ -1,4 +1,4 @@
-// Package broker передаёт события загрузки аватарок через RabbitMQ. Соединение
+// Package broker передаёт события аватарок через RabbitMQ. Соединение
 // открывается при первом обращении и переоткрывается после разрыва.
 package broker
 
@@ -16,6 +16,7 @@ import (
 const (
 	exchange = "avatars.exchange"
 	key      = "avatar.uploaded"
+	deleted  = "avatar.deleted"
 	queue    = "avatars.upload"
 	dlx      = "avatars.dlx"
 	dlq      = "avatars.upload.dlq"
@@ -28,11 +29,11 @@ var (
 	errDialing         = errors.New("подключение к брокеру уже идёт")
 )
 
-// Broker публикует и принимает события загрузки.
+// Broker публикует и принимает события загрузки и удаления.
 type Broker struct {
 	url    string
-	mu     sync.Mutex // охраняет поля ниже, не держится во время подключения
-	dial   sync.Mutex // занят, пока идёт подключение
+	mu     sync.Mutex
+	dial   sync.Mutex
 	conn   *amqp.Connection
 	ch     *amqp.Channel
 	closed bool
@@ -42,13 +43,11 @@ type Broker struct {
 // происходят при первом обращении.
 func Open(url string) (*Broker, error) {
 	if _, err := amqp.ParseURI(url); err != nil {
-		return nil, errors.New("неверный адрес") // ошибка разбора содержит пароль
+		return nil, errors.New("неверный адрес")
 	}
 	return &Broker{url: url}, nil
 }
 
-// channel отдаёт открытый канал, при разрыве подключаясь заново. Пока
-// подключается один вызов, остальные сразу получают errDialing.
 func (b *Broker) channel() (*amqp.Channel, error) {
 	b.mu.Lock()
 	ch, closed := b.ch, b.closed
@@ -80,34 +79,6 @@ func (b *Broker) channel() (*amqp.Channel, error) {
 	return ch, nil
 }
 
-// connect подключается к url не дольше 2 с на соединение и столько же на
-// handshake и объявляет очереди.
-func connect(url string) (*amqp.Connection, *amqp.Channel, error) {
-	conn, err := amqp.DialConfig(url, amqp.Config{Dial: amqp.DefaultDial(dial)})
-	if err != nil {
-		return nil, nil, err
-	}
-	ch, err := conn.Channel()
-	if err == nil {
-		err = errors.Join(ch.Confirm(false), ch.Qos(1, 0, false),
-			ch.ExchangeDeclare(exchange, amqp.ExchangeDirect, true, false, false, false, nil),
-			ch.ExchangeDeclare(dlx, amqp.ExchangeFanout, true, false, false, false, nil),
-			declare(ch, dlq, nil),
-			declare(ch, queue, amqp.Table{"x-queue-type": "quorum", "x-dead-letter-exchange": dlx, "x-delivery-limit": int32(5)}),
-			ch.QueueBind(queue, key, exchange, false, nil), ch.QueueBind(dlq, "", dlx, false, nil))
-	}
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	return conn, ch, nil
-}
-
-func declare(ch *amqp.Channel, name string, args amqp.Table) error {
-	_, err := ch.QueueDeclare(name, true, false, false, false, args)
-	return err
-}
-
 // Publish отправляет event в exchange с ключом key под новым идентификатором
 // сообщения и ждёт подтверждения брокера не дольше 5 с.
 func (b *Broker) Publish(ctx context.Context, exchange, key string, event any) error {
@@ -133,7 +104,7 @@ func (b *Broker) Publish(ctx context.Context, exchange, key string, event any) e
 	return err
 }
 
-// Consume возвращает доставки событий загрузки с ручным подтверждением.
+// Consume возвращает доставки событий с ручным подтверждением.
 // Канал доставок закрывается при разрыве соединения.
 func (b *Broker) Consume() (<-chan amqp.Delivery, error) {
 	ch, err := b.channel()

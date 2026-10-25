@@ -1,6 +1,6 @@
-// Command worker делает миниатюры аватарок GophProfile по событиям из
-// RabbitMQ. Нужны переменные окружения из пакета app. Останавливается по
-// SIGTERM, SIGINT и SIGQUIT, доводя текущее событие не дольше 10 с.
+// Command worker делает миниатюры и удаляет файлы аватарок GophProfile по
+// событиям из RabbitMQ. Нужны переменные окружения из пакета app. Ловит
+// SIGTERM, SIGINT и SIGQUIT и доводит текущее событие не дольше 10 с.
 package main
 
 import (

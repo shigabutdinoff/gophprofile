@@ -27,6 +27,9 @@ type Repository interface {
 	UpdateProcessingStatus(ctx context.Context, id string, status Status, keys map[string]string) error
 	// Delete удаляет запись аватарки id.
 	Delete(ctx context.Context, id string) error
+	// MarkDeleted помечает удалённой аватарку id. Если записи нет или она
+	// уже помечена, возвращает ErrNotFound.
+	MarkDeleted(ctx context.Context, id string) error
 }
 
 // Storage хранит файлы аватарок.
@@ -46,7 +49,7 @@ type Publisher interface {
 	Publish(ctx context.Context, exchange, key string, event any) error
 }
 
-// Service выполняет сценарии загрузки и чтения аватарок.
+// Service выполняет сценарии загрузки, чтения и удаления аватарок.
 type Service struct {
 	repo      Repository
 	files     Storage

@@ -88,3 +88,18 @@ func (h handler) file(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("ETag", strconv.Quote(hex.EncodeToString(sum[:])))
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 }
+
+func (h handler) remove(w http.ResponseWriter, r *http.Request) {
+	user := r.Header.Get("X-User-ID")
+	var err error
+	if id := r.PathValue("id"); id != "" {
+		err = h.svc.Delete(r.Context(), user, id)
+	} else {
+		err = h.svc.DeleteCurrent(r.Context(), user, userID(r))
+	}
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

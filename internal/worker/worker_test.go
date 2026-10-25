@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -43,6 +44,12 @@ type service struct {
 	failErr error
 	onCall  func()
 	got     avatar.AvatarUploadEvent
+	deleted avatar.AvatarDeleteEvent
+}
+
+func (s *service) HandleDeleteEvent(ctx context.Context, e avatar.AvatarDeleteEvent) error {
+	s.deleted = e
+	return s.HandleUploadEvent(ctx, avatar.AvatarUploadEvent{})
 }
 
 func (s *service) HandleUploadEvent(_ context.Context, e avatar.AvatarUploadEvent) error {
@@ -172,6 +179,7 @@ func TestLost(t *testing.T) {
 	assert.False(t, lost(errors.New("другое")))
 	assert.True(t, lost(&pgconn.PgError{Code: pgerrcode.ConnectionFailure}))
 	assert.True(t, lost(io.ErrUnexpectedEOF))
+	assert.True(t, lost(fmt.Errorf("%w: ещё не помечена", avatar.ErrUnavailable)), "событие до пометки не повторено")
 	assert.False(t, lost(context.DeadlineExceeded), "медленная обработка повторена")
 }
 
@@ -182,5 +190,42 @@ func TestHandleReturnedTooOften(t *testing.T) {
 		Headers: amqp.Table{"x-delivery-count": int64(4)}}, svc, time.Millisecond, time.Second)
 	assert.Zero(t, svc.calls, "событие обработано после четырёх возвратов")
 	assert.Equal(t, []string{"a1"}, svc.failed)
+	assert.Equal(t, 1, a.nacked)
+}
+
+const deleteEvent = `{"avatar_id":"a1","s3_keys":["originals/a1","thumbnails/a1/100x100.jpg"]}`
+
+func deliverDelete(svc *service, body string) *acks {
+	a := &acks{}
+	handle(context.Background(), context.Background(), amqp.Delivery{Acknowledger: a, Body: []byte(body), RoutingKey: "avatars.upload"},
+		svc, time.Millisecond, time.Second)
+	return a
+}
+
+func TestHandleDelete(t *testing.T) {
+	cases := map[string]struct {
+		replies       []error
+		calls         int
+		acked, nacked int
+	}{
+		"успех":                 {nil, 1, 1, 0},
+		"повтор":                {[]error{avatar.ErrDone}, 1, 1, 0},
+		"сбой сети и успех":     {[]error{errNet, nil}, 2, 1, 0},
+		"сбой на всех попытках": {[]error{io.EOF}, 6, 0, 1},
+	}
+	for name, c := range cases {
+		svc := &service{replies: c.replies}
+		a := deliverDelete(svc, deleteEvent)
+		assert.Equal(t, c.calls, svc.calls, "%s: вызовы", name)
+		assert.Equal(t, []int{c.acked, c.nacked}, []int{a.acked, a.nacked}, "%s: ответ брокеру", name)
+		assert.Empty(t, svc.failed, "%s: удалённая аватарка получила отметку сбоя", name)
+		assert.Equal(t, avatar.AvatarDeleteEvent{AvatarID: "a1", S3Keys: []string{"originals/a1", "thumbnails/a1/100x100.jpg"}}, svc.deleted, name)
+	}
+}
+
+func TestHandleBadDeleteEvent(t *testing.T) {
+	svc := &service{}
+	a := deliverDelete(svc, "не json")
+	assert.Zero(t, svc.calls, "битое событие дошло до сервиса")
 	assert.Equal(t, 1, a.nacked)
 }

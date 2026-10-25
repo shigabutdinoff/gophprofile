@@ -160,3 +160,18 @@ func (s *avatarsSuite) TestDelete() {
 	_, err := s.repo.GetAvatar(ctx, a.ID)
 	s.ErrorIs(err, avatar.ErrNotFound)
 }
+
+func (s *avatarsSuite) TestMarkDeleted() {
+	ctx := context.Background()
+	a := newAvatar("alice", "me.png")
+	s.Require().NoError(s.repo.Create(ctx, &a), "запись не создана")
+	s.Require().NoError(s.repo.MarkDeleted(ctx, a.ID))
+	_, err := s.repo.GetAvatar(ctx, a.ID)
+	s.ErrorIs(err, avatar.ErrNotFound, "удалённая запись читается")
+	list, err := s.repo.List(ctx, "alice", 0)
+	s.Require().NoError(err)
+	s.Empty(list, "удалённая запись в списке")
+	s.ErrorIs(s.repo.MarkDeleted(ctx, a.ID), avatar.ErrNotFound, "повторная пометка прошла")
+	s.ErrorIs(s.repo.UpdateProcessingStatus(ctx, a.ID, avatar.StatusCompleted, nil), avatar.ErrDone)
+	s.ErrorIs(s.repo.MarkDeleted(ctx, "00000000-0000-0000-0000-000000000000"), avatar.ErrNotFound)
+}

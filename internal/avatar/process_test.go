@@ -155,7 +155,6 @@ func TestProcessExifOrientation(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	require.NoError(t, jpeg.Encode(&buf, img, nil))
-	// APP1 с EXIF Orientation=6: показывать повёрнутой на 90° по часовой.
 	exif := []byte("\xff\xe1\x00\x22Exif\x00\x00MM\x00\x2a\x00\x00\x00\x08\x00\x01\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00")
 	data := append(append([]byte{0xff, 0xd8}, exif...), buf.Bytes()[2:]...)
 	svc, _, files, a := uploaded(t, data)

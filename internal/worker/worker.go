@@ -1,4 +1,4 @@
-// Package worker делает миниатюры аватарок по событиям загрузки из брокера.
+// Package worker обрабатывает события загрузки и удаления аватарок из брокера.
 // Временный сбой повторяется с растущей паузой, а событие, которое не
 // удалось обработать, уходит в очередь недоставленных.
 package worker
@@ -21,6 +21,8 @@ import (
 type Service interface {
 	// HandleUploadEvent делает миниатюры аватарки по событию загрузки e.
 	HandleUploadEvent(ctx context.Context, e avatar.AvatarUploadEvent) error
+	// HandleDeleteEvent удаляет файлы аватарки по событию удаления e.
+	HandleDeleteEvent(ctx context.Context, e avatar.AvatarDeleteEvent) error
 	// Fail отмечает, что аватарку id обработать не удалось.
 	Fail(ctx context.Context, id string) error
 }
@@ -45,8 +47,12 @@ func Run(ctx context.Context, deliveries <-chan amqp.Delivery, svc Service, grac
 }
 
 func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limit time.Duration) {
-	var e avatar.AvatarUploadEvent
-	err := json.Unmarshal(d.Body, &e)
+	var kind struct {
+		S3Keys []string `json:"s3_keys"`
+	}
+	_ = json.Unmarshal(d.Body, &kind)
+	upload := kind.S3Keys == nil
+	id, call, err := decode(d.Body, upload, svc)
 	returned, _ := d.Headers["x-delivery-count"].(int64)
 	switch {
 	case err != nil:
@@ -57,34 +63,45 @@ func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limi
 		err = retry.New(retry.Context(ctx), retry.Attempts(6), retry.Delay(pause), retry.MaxDelay(8*pause),
 			retry.DelayType(retry.BackOffDelay), retry.LastErrorOnly(true), retry.RetryIf(lost),
 			retry.OnRetry(func(n uint, err error) {
-				slog.Warn("событие не обработано, повтор", "id", e.AvatarID, "попытка", n+1, "err", err)
+				slog.Warn("событие не обработано, повтор", "id", id, "попытка", n+1, "err", err)
 			}),
 		).Do(func() error {
 			attempt, cancel := context.WithTimeout(work, limit)
 			defer cancel()
-			return svc.HandleUploadEvent(attempt, e)
+			return call(attempt)
 		})
 	}
 	switch {
 	case errors.Is(err, avatar.ErrDone):
-		slog.Info("повтор события", "id", e.AvatarID)
+		slog.Info("повтор события", "id", id)
 		err = d.Ack(false)
 	case err == nil:
 		err = d.Ack(false)
 	case ctx.Err() != nil && !errors.Is(err, avatar.ErrPermanent):
 		return
 	default:
-		slog.Error("событие ушло в очередь недоставленных", "id", e.AvatarID, "err", err)
-		if e.AvatarID != "" {
+		slog.Error("событие ушло в очередь недоставленных", "id", id, "err", err)
+		if upload && id != "" {
 			fctx, cancel := context.WithTimeout(work, limit)
 			defer cancel()
-			if ferr := svc.Fail(fctx, e.AvatarID); ferr != nil {
-				slog.Error("статус сбоя не записан", "id", e.AvatarID, "err", ferr)
+			if ferr := svc.Fail(fctx, id); ferr != nil {
+				slog.Error("статус сбоя не записан", "id", id, "err", ferr)
 			}
 		}
 		err = d.Nack(false, false)
 	}
 	if err != nil {
-		slog.Error("ответ брокеру не отправлен", "id", e.AvatarID, "err", err)
+		slog.Error("ответ брокеру не отправлен", "id", id, "err", err)
 	}
+}
+
+func decode(body []byte, upload bool, svc Service) (string, func(context.Context) error, error) {
+	if !upload {
+		var e avatar.AvatarDeleteEvent
+		err := json.Unmarshal(body, &e)
+		return e.AvatarID, func(ctx context.Context) error { return svc.HandleDeleteEvent(ctx, e) }, err
+	}
+	var e avatar.AvatarUploadEvent
+	err := json.Unmarshal(body, &e)
+	return e.AvatarID, func(ctx context.Context) error { return svc.HandleUploadEvent(ctx, e) }, err
 }

@@ -81,6 +81,19 @@ func (s *brokerSuite) TestPublishConsume() {
 	}, 10*time.Second, 100*time.Millisecond, "событие не попало в очередь недоставленных")
 }
 
+func (s *brokerSuite) TestDeleteRouted() {
+	e := avatar.AvatarDeleteEvent{AvatarID: "a6", S3Keys: []string{"originals/a6"}}
+	s.Require().NoError(s.b.Publish(context.Background(), "avatars.exchange", "avatar.deleted", e))
+	deliveries, err := s.b.Consume()
+	s.Require().NoError(err)
+	d := s.next(deliveries)
+	s.Equal("avatar.deleted", d.RoutingKey)
+	var got avatar.AvatarDeleteEvent
+	s.Require().NoError(json.Unmarshal(d.Body, &got))
+	s.Equal(e, got)
+	s.Require().NoError(d.Ack(false))
+}
+
 func (s *brokerSuite) TestClosed() {
 	s.Require().NoError(s.b.Ping(context.Background()))
 	s.Require().NoError(s.b.Close())
@@ -116,8 +129,6 @@ func (s *brokerSuite) TestReturnCounted() {
 	s.Require().NoError(d.Ack(false))
 }
 
-// Зависший брокер принимает соединение и молчит: подключается один вызов,
-// остальные не ждут его, а сам он сдаётся за таймаут.
 func TestHungBroker(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

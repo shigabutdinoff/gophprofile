@@ -31,6 +31,7 @@ var (
 
 type memory struct {
 	rows    []avatar.Avatar
+	gone    map[string]bool
 	objects map[string][]byte
 	readErr error
 	pubErr  error
@@ -45,6 +46,14 @@ func (m *memory) Delete(_ context.Context, id string) error {
 	return nil
 }
 
+func (m *memory) MarkDeleted(_ context.Context, id string) error {
+	if m.gone[id] {
+		return avatar.ErrNotFound
+	}
+	m.gone[id] = true
+	return nil
+}
+
 func (m *memory) Publish(context.Context, string, string, any) error { return m.pubErr }
 
 func (m *memory) Create(_ context.Context, a *avatar.Avatar) error {
@@ -56,7 +65,7 @@ func (m *memory) Create(_ context.Context, a *avatar.Avatar) error {
 
 func (m *memory) GetAvatar(_ context.Context, id string) (avatar.Avatar, error) {
 	for _, a := range m.rows {
-		if a.ID == id {
+		if a.ID == id && !m.gone[id] {
 			return a, nil
 		}
 	}
@@ -66,7 +75,7 @@ func (m *memory) GetAvatar(_ context.Context, id string) (avatar.Avatar, error) 
 func (m *memory) List(_ context.Context, userID string, limit int) ([]avatar.Avatar, error) {
 	list := []avatar.Avatar{}
 	for _, a := range m.rows {
-		if a.UserID == userID && (limit == 0 || len(list) < limit) {
+		if a.UserID == userID && !m.gone[a.ID] && (limit == 0 || len(list) < limit) {
 			list = append(list, a)
 		}
 	}
@@ -98,7 +107,7 @@ func etag(data []byte) string {
 
 func start(t *testing.T) (*httptest.Server, *memory) {
 	t.Helper()
-	m := &memory{objects: map[string][]byte{}}
+	m := &memory{objects: map[string][]byte{}, gone: map[string]bool{}}
 	srv := httptest.NewServer(api.New(avatar.New(m, files{m}, m), http.NotFoundHandler()))
 	t.Cleanup(srv.Close)
 	return srv, m
@@ -336,4 +345,65 @@ func TestHealth(t *testing.T) {
 	t.Cleanup(srv.Close)
 	resp, _ = get(t, srv, "/")
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func remove(t *testing.T, srv *httptest.Server, user, path string) (*http.Response, []byte) {
+	t.Helper()
+	req := client.R()
+	if user != "" {
+		req.SetHeader("X-User-ID", user)
+	}
+	return send(t, req, http.MethodDelete, srv.URL+path)
+}
+
+func TestDelete(t *testing.T) {
+	srv, m := start(t)
+	id := idOf(upload(t, srv, "alice", "a.png", pngBytes(t, 2, 2, 0)))
+	resp, body := remove(t, srv, "bob", "/api/v1/avatars/"+id)
+	expect(t, resp, body, http.StatusForbidden, map[string]any{"error": "Forbidden", "details": "You can only delete your own avatars"})
+	resp, body = remove(t, srv, "", "/api/v1/avatars/"+id)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "без X-User-ID: %s", body)
+	resp, body = remove(t, srv, "alice", "/api/v1/avatars/"+id)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode, "удаление: %s", body)
+	assert.Empty(t, body, "у ответа 204 есть тело")
+	resp, body = get(t, srv, "/api/v1/avatars/"+id)
+	expect(t, resp, body, http.StatusNotFound, map[string]any{"error": "Avatar not found"})
+	resp, body = remove(t, srv, "alice", "/api/v1/avatars/"+id)
+	expect(t, resp, body, http.StatusNotFound, map[string]any{"error": "Avatar not found"})
+	assert.True(t, m.gone[id])
+}
+
+func TestDeleteCurrent(t *testing.T) {
+	srv, _ := start(t)
+	first := idOf(upload(t, srv, "a/b", "a.png", pngBytes(t, 2, 2, 0)))
+	upload(t, srv, "a/b", "b.png", pngBytes(t, 3, 3, 0))
+	resp, body := remove(t, srv, "bob", "/api/v1/users/a%2Fb/avatar")
+	expect(t, resp, body, http.StatusForbidden, map[string]any{"error": "Forbidden"})
+	resp, body = remove(t, srv, "a/b", "/api/v1/users/a%2Fb/avatar")
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode, "удаление текущей: %s", body)
+	resp, _ = get(t, srv, "/api/v1/avatars/"+first+"/metadata")
+	require.Equal(t, http.StatusOK, resp.StatusCode, "предыдущая аватарка удалена")
+	resp, current := get(t, srv, "/api/v1/users/a%2Fb/avatar")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, pngBytes(t, 2, 2, 0), current, "текущей не стала предыдущая")
+}
+
+func TestDeleteUnavailable(t *testing.T) {
+	srv, m := start(t)
+	id := idOf(upload(t, srv, "alice", "a.png", pngBytes(t, 2, 2, 0)))
+	m.pubErr = errBroken
+	resp, body := remove(t, srv, "alice", "/api/v1/avatars/"+id)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "тело %s", body)
+	resp, _ = get(t, srv, "/api/v1/avatars/"+id)
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "аватарка не читается после отката")
+}
+
+func TestRateLimit(t *testing.T) {
+	srv, _ := start(t)
+	for range 100 {
+		resp, _ := get(t, srv, "/health")
+		require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	}
+	resp, _ := get(t, srv, "/health")
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "101-й запрос с одного IP")
 }

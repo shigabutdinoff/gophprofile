@@ -25,8 +25,29 @@ const webp1x1 = "RIFF\x1a\x00\x00\x00WEBPVP8L\x0d\x00\x00\x00\x2f\x00\x00\x00\x1
 
 type fakeRepo struct {
 	rows    []avatar.Avatar
+	gone    map[string]bool
+	onMark  func()
 	fail    error
 	getting int
+}
+
+func (r *fakeRepo) MarkDeleted(_ context.Context, id string) error {
+	if r.onMark != nil {
+		r.onMark()
+	}
+	if r.fail != nil {
+		return r.fail
+	}
+	for _, a := range r.rows {
+		if a.ID == id && !r.gone[id] {
+			if r.gone == nil {
+				r.gone = map[string]bool{}
+			}
+			r.gone[id] = true
+			return nil
+		}
+	}
+	return avatar.ErrNotFound
 }
 
 func (r *fakeRepo) UpdateProcessingStatus(_ context.Context, id string, status avatar.Status, keys map[string]string) error {
@@ -34,7 +55,7 @@ func (r *fakeRepo) UpdateProcessingStatus(_ context.Context, id string, status a
 		return r.fail
 	}
 	for i, a := range r.rows {
-		if a.ID == id && a.Status == avatar.StatusProcessing {
+		if a.ID == id && a.Status == avatar.StatusProcessing && !r.gone[id] {
 			r.rows[i].Status, r.rows[i].ThumbnailKeys = status, keys
 			return nil
 		}
@@ -63,7 +84,7 @@ func (r *fakeRepo) GetAvatar(_ context.Context, id string) (avatar.Avatar, error
 		return avatar.Avatar{}, r.fail
 	}
 	for _, a := range r.rows {
-		if a.ID == id {
+		if a.ID == id && !r.gone[id] {
 			return a, nil
 		}
 	}
@@ -76,7 +97,7 @@ func (r *fakeRepo) List(_ context.Context, userID string, limit int) ([]avatar.A
 	}
 	list := []avatar.Avatar{}
 	for _, a := range r.rows {
-		if a.UserID == userID && (limit == 0 || len(list) < limit) {
+		if a.UserID == userID && !r.gone[a.ID] && (limit == 0 || len(list) < limit) {
 			list = append(list, a)
 		}
 	}
@@ -84,8 +105,9 @@ func (r *fakeRepo) List(_ context.Context, userID string, limit int) ([]avatar.A
 }
 
 type fakeFiles struct {
-	objects map[string][]byte
-	fail    error
+	objects  map[string][]byte
+	fail     error
+	onUpload func(key string)
 }
 
 func (f *fakeFiles) Upload(_ context.Context, key string, data []byte) error {
@@ -93,6 +115,9 @@ func (f *fakeFiles) Upload(_ context.Context, key string, data []byte) error {
 		return f.fail
 	}
 	f.objects[key] = data
+	if f.onUpload != nil {
+		f.onUpload(key)
+	}
 	return nil
 }
 
@@ -104,6 +129,9 @@ func (f *fakeFiles) Download(_ context.Context, key string, _ int64) ([]byte, er
 }
 
 func (f *fakeFiles) Delete(_ context.Context, key string) error {
+	if f.fail != nil {
+		return f.fail
+	}
 	delete(f.objects, key)
 	return nil
 }
@@ -112,9 +140,15 @@ type fakePub struct {
 	routes []string
 	events []any
 	fail   error
+	during func()
+	ctxErr error
 }
 
-func (p *fakePub) Publish(_ context.Context, exchange, key string, event any) error {
+func (p *fakePub) Publish(ctx context.Context, exchange, key string, event any) error {
+	if p.during != nil {
+		p.during()
+	}
+	p.ctxErr = ctx.Err()
 	p.routes = append(p.routes, exchange+" "+key)
 	p.events = append(p.events, event)
 	return p.fail
