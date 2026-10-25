@@ -19,9 +19,11 @@ type handler struct {
 }
 
 // New собирает обработчик маршрутов загрузки и чтения аватарок над svc.
-func New(svc *avatar.Service) http.Handler {
+// Состояние служб отдаёт health.
+func New(svc *avatar.Service, health http.Handler) http.Handler {
 	h := handler{svc: svc}
 	r := chi.NewRouter()
+	r.Method(http.MethodGet, "/health", health)
 	r.Post("/api/v1/avatars", h.upload)
 	r.Get("/api/v1/avatars/{id}", h.file)
 	r.Get("/api/v1/avatars/{id}/metadata", h.metadata)
@@ -57,6 +59,9 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large", "max_size": avatar.MaxSize})
 	case errors.Is(err, avatar.ErrUserID), errors.Is(err, errBadRequest), errors.Is(err, avatar.ErrTooManyPixels):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, avatar.ErrUnavailable):
+		slog.ErrorContext(r.Context(), "событие не принято", "path", r.URL.Path, "err", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": avatar.ErrUnavailable.Error()})
 	default:
 		slog.ErrorContext(r.Context(), "запрос не выполнен", "method", r.Method, "path", r.URL.Path, "err", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "внутренняя ошибка"})

@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,24 @@ type fakeRepo struct {
 	rows    []avatar.Avatar
 	fail    error
 	getting int
+}
+
+func (r *fakeRepo) UpdateProcessingStatus(_ context.Context, id string, status avatar.Status, keys map[string]string) error {
+	if r.fail != nil {
+		return r.fail
+	}
+	for i, a := range r.rows {
+		if a.ID == id && a.Status == avatar.StatusProcessing {
+			r.rows[i].Status, r.rows[i].ThumbnailKeys = status, keys
+			return nil
+		}
+	}
+	return avatar.ErrDone
+}
+
+func (r *fakeRepo) Delete(_ context.Context, id string) error {
+	r.rows = slices.DeleteFunc(r.rows, func(a avatar.Avatar) bool { return a.ID == id })
+	return nil
 }
 
 func (r *fakeRepo) Create(_ context.Context, a *avatar.Avatar) error {
@@ -84,10 +103,33 @@ func (f *fakeFiles) Download(_ context.Context, key string, _ int64) ([]byte, er
 	return f.objects[key], nil
 }
 
+func (f *fakeFiles) Delete(_ context.Context, key string) error {
+	delete(f.objects, key)
+	return nil
+}
+
+type fakePub struct {
+	routes []string
+	events []any
+	fail   error
+}
+
+func (p *fakePub) Publish(_ context.Context, exchange, key string, event any) error {
+	p.routes = append(p.routes, exchange+" "+key)
+	p.events = append(p.events, event)
+	return p.fail
+}
+
 func newService() (*avatar.Service, *fakeRepo, *fakeFiles) {
+	svc, repo, files, _ := withPublisher()
+	return svc, repo, files
+}
+
+func withPublisher() (*avatar.Service, *fakeRepo, *fakeFiles, *fakePub) {
 	repo := &fakeRepo{}
 	files := &fakeFiles{objects: map[string][]byte{}}
-	return avatar.New(repo, files), repo, files
+	pub := &fakePub{}
+	return avatar.New(repo, files, pub), repo, files, pub
 }
 
 func pngBytes(t *testing.T, w, h int) []byte {

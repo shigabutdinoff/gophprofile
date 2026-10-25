@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,19 @@ type memory struct {
 	rows    []avatar.Avatar
 	objects map[string][]byte
 	readErr error
+	pubErr  error
 }
+
+func (m *memory) UpdateProcessingStatus(context.Context, string, avatar.Status, map[string]string) error {
+	return avatar.ErrDone
+}
+
+func (m *memory) Delete(_ context.Context, id string) error {
+	m.rows = slices.DeleteFunc(m.rows, func(a avatar.Avatar) bool { return a.ID == id })
+	return nil
+}
+
+func (m *memory) Publish(context.Context, string, string, any) error { return m.pubErr }
 
 func (m *memory) Create(_ context.Context, a *avatar.Avatar) error {
 	a.CreatedAt = time.Date(2026, 10, 23, 15, len(m.rows), 0, 123456789, time.FixedZone("MSK", 3*60*60))
@@ -67,6 +80,11 @@ func (m *memory) Upload(_ context.Context, key string, data []byte) error {
 
 type files struct{ *memory }
 
+func (f files) Delete(_ context.Context, key string) error {
+	delete(f.objects, key)
+	return nil
+}
+
 func (f files) Download(_ context.Context, key string, _ int64) ([]byte, error) {
 	if f.readErr != nil {
 		return nil, f.readErr
@@ -81,7 +99,7 @@ func etag(data []byte) string {
 func start(t *testing.T) (*httptest.Server, *memory) {
 	t.Helper()
 	m := &memory{objects: map[string][]byte{}}
-	srv := httptest.NewServer(api.New(avatar.New(m, files{m})))
+	srv := httptest.NewServer(api.New(avatar.New(m, files{m}, m), http.NotFoundHandler()))
 	t.Cleanup(srv.Close)
 	return srv, m
 }
@@ -267,11 +285,21 @@ func TestBadRequests(t *testing.T) {
 	expect(t, resp, body, http.StatusInternalServerError, map[string]any{"error": "внутренняя ошибка"})
 }
 
+func TestUnavailableBroker(t *testing.T) {
+	srv, m := start(t)
+	m.pubErr = errBroken
+	resp, got := upload(t, srv, "alice", "me.png", pngBytes(t, 1, 1, 0))
+	expect(t, resp, got, http.StatusServiceUnavailable, map[string]any{"error": avatar.ErrUnavailable.Error()})
+	assert.Empty(t, m.rows, "запись не откатилась")
+	assert.Empty(t, m.objects, "файл не откатился")
+}
+
 func TestThumbnails(t *testing.T) {
 	srv, m := start(t)
 	id := idOf(upload(t, srv, "alice", "me.png", pngBytes(t, 1, 1, 0)))
 	_, body := get(t, srv, "/api/v1/avatars/"+id+"/metadata")
 	assert.Equal(t, []any{}, decode(body)["thumbnails"], "миниатюры до обработки")
+	m.rows[0].Status = avatar.StatusCompleted
 	m.rows[0].ThumbnailKeys = map[string]string{"100x100": "thumbnails/" + id + "/100x100.jpg", "300x300": "thumbnails/" + id + "/300x300.jpg"}
 	m.objects["thumbnails/"+id+"/100x100.jpg"] = []byte("миниатюра")
 	resp, body := get(t, srv, "/api/v1/avatars/"+id+"?size=100x100")
@@ -286,4 +314,22 @@ func TestThumbnails(t *testing.T) {
 		map[string]any{"size": "100x100", "url": "/api/v1/avatars/" + id + "?size=100x100"},
 		map[string]any{"size": "300x300", "url": "/api/v1/avatars/" + id + "?size=300x300"},
 	}, decode(body)["thumbnails"])
+}
+
+func TestHealth(t *testing.T) {
+	broken := errors.New("секретный адрес 10.0.0.1")
+	ok := func(context.Context) error { return nil }
+	srv := httptest.NewServer(api.New(nil, api.Health(map[string]func(context.Context) error{
+		"postgres": ok, "rabbitmq": ok, "s3": func(context.Context) error { return broken }})))
+	t.Cleanup(srv.Close)
+	resp, body := get(t, srv, "/health")
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.NotContains(t, string(body), broken.Error(), "текст ошибки в ответе")
+	details := decode(body)["details"].(map[string]any)
+	assert.Equal(t, "down", details["s3"].(map[string]any)["status"])
+	assert.Equal(t, "up", details["postgres"].(map[string]any)["status"])
+	srv = httptest.NewServer(api.Health(map[string]func(context.Context) error{"postgres": ok}))
+	t.Cleanup(srv.Close)
+	resp, _ = get(t, srv, "/")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }

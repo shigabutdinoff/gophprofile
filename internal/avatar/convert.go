@@ -41,16 +41,24 @@ func Convert(ctx context.Context, a Avatar, data []byte, format string) ([]byte,
 // ponytail: один слот на процесс, больше слотов, когда памяти хватит.
 var slot = make(chan struct{}, 1)
 
-func transcode(ctx context.Context, a Avatar, data []byte, format string, change func(image.Image) image.Image) ([]byte, error) {
+func acquire(ctx context.Context, a Avatar) (func(), error) {
 	if a.Dimensions.Width*a.Dimensions.Height > MaxPixels {
 		return nil, ErrTooManyPixels
 	}
 	select {
 	case slot <- struct{}{}:
-		defer func() { <-slot }()
+		return func() { <-slot }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func transcode(ctx context.Context, a Avatar, data []byte, format string, change func(image.Image) image.Image) ([]byte, error) {
+	release, err := acquire(ctx, a)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	img, err := decode(data)
 	if err != nil {
 		return nil, err

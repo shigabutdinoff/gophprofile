@@ -80,3 +80,18 @@ func TestSingleAttempt(t *testing.T) {
 		assert.Equal(t, int32(2), f.requests.Load(), "%s, ожидалось два запроса", name)
 	}
 }
+
+func TestDeleteAndPing(t *testing.T) {
+	var method, target string
+	status := http.StatusNoContent
+	f := startS3(t, func(w http.ResponseWriter, r *http.Request) {
+		method, target = r.Method, r.URL.Path
+		w.WriteHeader(status)
+	})
+	require.NoError(t, f.client.Delete(t.Context(), key))
+	assert.Equal(t, []string{http.MethodDelete, path}, []string{method, target})
+	require.NoError(t, f.client.Ping(t.Context()))
+	assert.Equal(t, []string{http.MethodHead, "/avatars"}, []string{method, target})
+	status = http.StatusInternalServerError
+	assert.Error(t, f.client.Ping(t.Context()), "сбой хранилища не замечен")
+}

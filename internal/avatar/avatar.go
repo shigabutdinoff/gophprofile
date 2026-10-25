@@ -19,8 +19,14 @@ const Original = "original"
 // Status это состояние обработки аватарки.
 type Status string
 
-// StatusProcessing отмечает аватарку, миниатюры которой ещё не готовы.
-const StatusProcessing Status = "processing"
+const (
+	// StatusProcessing отмечает аватарку, миниатюры которой ещё не готовы.
+	StatusProcessing Status = "processing"
+	// StatusCompleted отмечает аватарку с готовыми миниатюрами.
+	StatusCompleted Status = "completed"
+	// StatusFailed отмечает аватарку, миниатюры которой сделать не удалось.
+	StatusFailed Status = "failed"
+)
 
 var (
 	// ErrNotFound сообщает, что аватарки нет.
@@ -32,6 +38,12 @@ var (
 	// ErrUserID сообщает, что идентификатор пользователя пуст, не в UTF8,
 	// содержит NUL или длиннее 255 символов.
 	ErrUserID = errors.New("неверный идентификатор пользователя")
+	// ErrUnavailable сообщает, что брокер не принял событие загрузки.
+	ErrUnavailable = errors.New("сервис временно недоступен")
+	// ErrDone сообщает, что аватарка уже не ждёт обработки.
+	ErrDone = errors.New("аватарка уже обработана")
+	// ErrPermanent отмечает сбой обработки, который повтор не исправит.
+	ErrPermanent = errors.New("аватарку нельзя обработать")
 )
 
 // Dimensions это ширина и высота оригинала в пикселях.

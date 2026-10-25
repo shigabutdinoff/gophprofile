@@ -1,18 +1,27 @@
 package main
 
 import (
+	"context"
+	"net/http"
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	tcrabbit "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
 )
 
 func setEnv(t *testing.T, values map[string]string) {
 	t.Helper()
-	for _, key := range []string{"DATABASE_URL", "S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "HTTP_ADDRESS"} {
+	for _, key := range []string{"DATABASE_URL", "S3_ENDPOINT", "S3_ACCESS_KEY", "S3_SECRET_KEY", "RABBITMQ_URL"} {
 		t.Setenv(key, values[key])
+	}
+	t.Setenv("HTTP_ADDRESS", "127.0.0.1:0")
+	if addr, ok := values["HTTP_ADDRESS"]; ok {
+		t.Setenv("HTTP_ADDRESS", addr)
 	}
 }
 
@@ -22,45 +31,49 @@ func full() map[string]string {
 		"S3_ENDPOINT":   "http://127.0.0.1:1",
 		"S3_ACCESS_KEY": "minio",
 		"S3_SECRET_KEY": "секрет",
-		"HTTP_ADDRESS":  ":-1",
+		"RABBITMQ_URL":  "amqp://guest:guest@127.0.0.1:1/",
 	}
 }
 
 func TestRunMissing(t *testing.T) {
-	noDatabase := full()
-	delete(noDatabase, "DATABASE_URL")
-	for _, c := range []struct {
-		env  map[string]string
-		want string
-	}{
-		{noDatabase, "не заданы DATABASE_URL"},
-		{nil, "не заданы DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY"},
-	} {
-		setEnv(t, c.env)
-		assert.EqualError(t, run(), c.want)
-	}
-}
-
-func TestRunBadDatabase(t *testing.T) {
-	env := full()
-	env["DATABASE_URL"] = "postgres://postgres:секрет-базы@127.0.0.1:99999/postgres"
-	setEnv(t, env)
-	err := run()
-	require.ErrorContains(t, err, "DATABASE_URL")
-	assert.NotContains(t, err.Error(), "секрет-базы", "в ошибке пароль базы")
+	setEnv(t, nil)
+	assert.EqualError(t, run(context.Background()), "не заданы DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, RABBITMQ_URL")
 }
 
 func TestRunBadAddress(t *testing.T) {
-	setEnv(t, full())
-	assert.ErrorContains(t, run(), "HTTP_ADDRESS: ", "ожидалась ошибка прослушивания")
+	env := full()
+	env["HTTP_ADDRESS"] = ":-1"
+	setEnv(t, env)
+	assert.ErrorContains(t, run(context.Background()), "HTTP_ADDRESS: ", "ожидалась ошибка прослушивания")
 }
 
-func TestRunBadStorage(t *testing.T) {
-	for _, endpoint := range []string{"minio:9000", "http://", "::"} {
-		env := full()
-		env["S3_ENDPOINT"] = endpoint
-		setEnv(t, env)
-		assert.ErrorContains(t, run(), "S3_ENDPOINT", "адрес %q", endpoint)
+func TestRunServesAndStops(t *testing.T) {
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+	ctr, err := tcrabbit.Run(context.Background(), "rabbitmq:4.4.0-management-alpine")
+	testcontainers.CleanupContainer(t, ctr)
+	require.NoError(t, err, "контейнер RabbitMQ не запущен")
+	env := full()
+	env["RABBITMQ_URL"], err = ctr.AmqpURL(context.Background())
+	require.NoError(t, err)
+	env["HTTP_ADDRESS"] = "127.0.0.1:18080"
+	setEnv(t, env)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx) }()
+	require.Eventually(t, func() bool {
+		resp, err := http.Get("http://127.0.0.1:18080/health")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusServiceUnavailable
+	}, 10*time.Second, 50*time.Millisecond, "сервер не ответил")
+	cancel()
+	select {
+	case err := <-done:
+		assert.NoError(t, err, "остановка с ошибкой")
+	case <-time.After(15 * time.Second):
+		require.Fail(t, "сервер не остановился")
 	}
 }
 

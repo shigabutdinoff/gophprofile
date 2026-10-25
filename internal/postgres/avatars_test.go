@@ -133,3 +133,30 @@ func (s *avatarsSuite) TestClosedPool() {
 	s.Require().Error(err)
 	s.NotErrorIs(err, avatar.ErrNotFound, "ожидалась ошибка базы")
 }
+
+func (s *avatarsSuite) TestUpdateProcessingStatus() {
+	ctx := context.Background()
+	a := newAvatar("alice", "me.png")
+	s.Require().NoError(s.repo.Create(ctx, &a), "запись не создана")
+	time.Sleep(10 * time.Millisecond)
+	keys := map[string]string{"100x100": "thumbnails/a/100x100.jpg"}
+	s.Require().NoError(s.repo.UpdateProcessingStatus(ctx, a.ID, avatar.StatusCompleted, keys))
+	got, err := s.repo.GetAvatar(ctx, a.ID)
+	s.Require().NoError(err)
+	s.Equal(avatar.StatusCompleted, got.Status)
+	s.Equal(keys, got.ThumbnailKeys)
+	s.True(got.UpdatedAt.After(a.UpdatedAt), "updated_at не обновлён")
+	s.ErrorIs(s.repo.UpdateProcessingStatus(ctx, a.ID, avatar.StatusFailed, nil), avatar.ErrDone)
+	got, err = s.repo.GetAvatar(ctx, a.ID)
+	s.Require().NoError(err)
+	s.Equal(avatar.StatusCompleted, got.Status, "статус готовой аватарки изменён")
+}
+
+func (s *avatarsSuite) TestDelete() {
+	ctx := context.Background()
+	a := newAvatar("alice", "me.png")
+	s.Require().NoError(s.repo.Create(ctx, &a), "запись не создана")
+	s.Require().NoError(s.repo.Delete(ctx, a.ID))
+	_, err := s.repo.GetAvatar(ctx, a.ID)
+	s.ErrorIs(err, avatar.ErrNotFound)
+}

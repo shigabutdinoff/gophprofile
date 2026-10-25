@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/HugoSmits86/nativewebp v1.3.0
+	github.com/alexliesenfeld/health v0.8.1
 	github.com/aws/aws-sdk-go-v2 v1.47.4
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.10
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.3
@@ -11,9 +12,11 @@ require (
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/rabbitmq/amqp091-go v1.16.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.44.0
 	golang.org/x/image v0.41.0
 )
 

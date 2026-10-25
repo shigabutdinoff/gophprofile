@@ -22,6 +22,11 @@ type Repository interface {
 	GetAvatar(ctx context.Context, id string) (Avatar, error)
 	// List возвращает до limit аватарок userID новыми первыми, 0 без предела.
 	List(ctx context.Context, userID string, limit int) ([]Avatar, error)
+	// UpdateProcessingStatus ставит status и ключи миниатюр keys аватарке id
+	// в обработке, иначе возвращает ErrDone.
+	UpdateProcessingStatus(ctx context.Context, id string, status Status, keys map[string]string) error
+	// Delete удаляет запись аватарки id.
+	Delete(ctx context.Context, id string) error
 }
 
 // Storage хранит файлы аватарок.
@@ -30,21 +35,33 @@ type Storage interface {
 	Upload(ctx context.Context, key string, data []byte) error
 	// Download читает объект key не длиннее limit байт.
 	Download(ctx context.Context, key string, limit int64) ([]byte, error)
+	// Delete удаляет объект key.
+	Delete(ctx context.Context, key string) error
+}
+
+// Publisher передаёт события обработчику.
+type Publisher interface {
+	// Publish отправляет event в exchange с ключом key и возвращается, когда
+	// брокер его принял.
+	Publish(ctx context.Context, exchange, key string, event any) error
 }
 
 // Service выполняет сценарии загрузки и чтения аватарок.
 type Service struct {
-	repo  Repository
-	files Storage
+	repo      Repository
+	files     Storage
+	publisher Publisher
 }
 
-// New собирает сервис над метаданными repo и файлами files.
-func New(repo Repository, files Storage) *Service {
-	return &Service{repo: repo, files: files}
+// New собирает сервис над метаданными repo, файлами files и брокером
+// publisher.
+func New(repo Repository, files Storage, publisher Publisher) *Service {
+	return &Service{repo: repo, files: files, publisher: publisher}
 }
 
 // Upload проверяет и сохраняет файл data с именем name пользователя userID.
-// При сбое записи файл остаётся в хранилище.
+// Если событие не отправлено, запись и файл удаляются. Если брокер не принял
+// событие, ошибка содержит ErrUnavailable.
 func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) (Avatar, error) {
 	if !validUserID(userID) {
 		return Avatar{}, ErrUserID
@@ -65,8 +82,13 @@ func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) 
 	if err := s.files.Upload(ctx, a.S3Key, data); err != nil {
 		return Avatar{}, err
 	}
-	err = s.repo.Create(ctx, &a)
-	return a, err
+	if err = s.repo.Create(ctx, &a); err != nil {
+		return Avatar{}, err
+	}
+	if err = s.PublishUploadEvent(ctx, a.ID, a.UserID, a.S3Key); err != nil {
+		return Avatar{}, s.rollback(ctx, a, err)
+	}
+	return a, nil
 }
 
 func sameFrame(data []byte, cfg image.Config) error {

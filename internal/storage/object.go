@@ -32,3 +32,15 @@ func (c *Client) Download(ctx context.Context, key string, limit int64) ([]byte,
 	}
 	return data, err
 }
+
+// Delete удаляет объект key. Отсутствие объекта не считается ошибкой.
+func (c *Client) Delete(ctx context.Context, key string) error {
+	_, err := c.s3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+	return err
+}
+
+// Ping проверяет, что хранилище отвечает и бакет доступен.
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.s3.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
+	return err
+}

@@ -49,6 +49,23 @@ func (r *Avatars) List(ctx context.Context, userID string, limit int) ([]avatar.
 	return pgx.CollectRows(rows, scan)
 }
 
+// UpdateProcessingStatus ставит status и ключи миниатюр keys аватарке id,
+// которая ещё в обработке. Иначе возвращает avatar.ErrDone.
+func (r *Avatars) UpdateProcessingStatus(ctx context.Context, id string, status avatar.Status, keys map[string]string) error {
+	tag, err := r.db.Exec(ctx, `UPDATE avatars SET processing_status = $2, thumbnail_s3_keys = $3, updated_at = now()
+		WHERE id = $1 AND processing_status = 'processing'`, id, string(status), keys)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = avatar.ErrDone
+	}
+	return err
+}
+
+// Delete удаляет запись аватарки id.
+func (r *Avatars) Delete(ctx context.Context, id string) error {
+	_, err := r.db.Exec(ctx, "DELETE FROM avatars WHERE id = $1", id)
+	return err
+}
+
 func scan(row pgx.CollectableRow) (avatar.Avatar, error) {
 	var a avatar.Avatar
 	err := row.Scan(&a.ID, &a.UserID, &a.FileName, &a.MIMEType, &a.Size, &a.Dimensions.Width, &a.Dimensions.Height, &a.S3Key, &a.ThumbnailKeys,
