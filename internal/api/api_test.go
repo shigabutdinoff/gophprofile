@@ -172,6 +172,10 @@ func TestUpload(t *testing.T) {
 
 func TestUploadFromPage(t *testing.T) {
 	srv, _ := start(t)
+	resp, body := get(t, srv, "/")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Contains(t, string(body), "formData.append('image'", "ожидалась страница из шаблона")
 	req := client.R().SetHeader("X-User-ID", "alice").SetFileReader("image", "me.png", bytes.NewReader(pngBytes(t, 4, 4, 0)))
 	resp, raw := send(t, req, http.MethodPost, srv.URL+"/api/v1/avatars")
 	assert.Equal(t, http.StatusCreated, resp.StatusCode, "загрузка со страницы не принята, ответ %s", raw)

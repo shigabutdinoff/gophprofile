@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
+	"github.com/shigabutdinoff/gophprofile/web"
 )
 
 var errBadRequest = errors.New("неверный запрос")
@@ -18,12 +19,13 @@ type handler struct {
 	svc *avatar.Service
 }
 
-// New собирает обработчик маршрутов загрузки и чтения аватарок над svc.
-// Состояние служб отдаёт health.
+// New собирает обработчик маршрутов загрузки и чтения аватарок над svc
+// и страницы загрузки по корню. Состояние служб отдаёт health.
 func New(svc *avatar.Service, health http.Handler) http.Handler {
 	h := handler{svc: svc}
 	r := chi.NewRouter()
 	r.Method(http.MethodGet, "/health", health)
+	r.Get("/", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(web.Index) })
 	r.Post("/api/v1/avatars", h.upload)
 	r.Get("/api/v1/avatars/{id}", h.file)
 	r.Get("/api/v1/avatars/{id}/metadata", h.metadata)
