@@ -1,0 +1,8 @@
+.git
+.idea
+.playwright-mcp
+docs
+compose.yaml
+Dockerfile
+*.md
+**/*_test.go

@@ -1,0 +1,77 @@
+x-app: &app
+  build: .
+  image: gophprofile
+  restart: unless-stopped
+  environment:
+    DATABASE_URL: postgres://avatars:avatars@postgres:5432/avatars?sslmode=disable
+    S3_ENDPOINT: http://minio:9000
+    S3_ACCESS_KEY: minio
+    S3_SECRET_KEY: minio-secret
+    RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  depends_on:
+    migrate: {condition: service_completed_successfully}
+    bucket: {condition: service_completed_successfully}
+    rabbitmq: {condition: service_healthy}
+
+services:
+  server:
+    <<: *app
+    command: ./server
+    ports: ["8080:8080"]
+    healthcheck:
+      test: [CMD, wget, -qO-, http://localhost:8080/health]
+      interval: 5s
+      retries: 10
+  worker:
+    <<: *app
+    command: ./worker
+    healthcheck:
+      test: [CMD, pidof, worker]
+      interval: 5s
+  postgres:
+    image: postgres:18.6-alpine
+    environment:
+      POSTGRES_DB: avatars
+      POSTGRES_USER: avatars
+      POSTGRES_PASSWORD: avatars
+    volumes: [postgres:/var/lib/postgresql]
+    healthcheck:
+      test: [CMD, pg_isready, -q, -h, localhost, -d, avatars, -U, avatars]
+      interval: 2s
+      retries: 30
+  migrate:
+    image: migrate/migrate:v4.20.1
+    command: [-path, /migrations, -database, "postgres://avatars:avatars@postgres:5432/avatars?sslmode=disable", up]
+    volumes: [./migrations:/migrations:ro]
+    depends_on:
+      postgres: {condition: service_healthy}
+  rabbitmq:
+    image: rabbitmq:4.4.0-management-alpine
+    hostname: rabbitmq
+    ports: ["127.0.0.1:15672:15672"]
+    volumes: [rabbitmq:/var/lib/rabbitmq]
+    healthcheck:
+      test: [CMD, rabbitmq-diagnostics, -q, ping]
+      interval: 5s
+      retries: 20
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio-secret
+    volumes: [minio:/data]
+    healthcheck:
+      test: [CMD, curl, -fs, http://localhost:9000/minio/health/ready]
+      interval: 2s
+      retries: 30
+  bucket:
+    image: pgsty/mc:RELEASE.2026-10-18T00-00-00Z
+    entrypoint: [sh, -c, "mc alias set local http://minio:9000 minio minio-secret && mc mb --ignore-existing local/avatars"]
+    depends_on:
+      minio: {condition: service_healthy}
+
+volumes:
+  postgres:
+  rabbitmq:
+  minio:
