@@ -24,10 +24,7 @@ import (
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 )
 
-var (
-	errBroken = errors.New("сбой хранилища")
-	client    = resty.New()
-)
+var errBroken = errors.New("сбой хранилища")
 
 type memory struct {
 	rows    []avatar.Avatar
@@ -120,20 +117,20 @@ func pngBytes(t *testing.T, w, h int, pad int) []byte {
 	return append(buf.Bytes(), make([]byte, pad)...)
 }
 
-func upload(t *testing.T, srv *httptest.Server, user, name string, data []byte) (*http.Response, []byte) {
+func upload(t *testing.T, srv *httptest.Server, user, name string, data []byte) (*resty.Response, []byte) {
 	t.Helper()
-	req := client.R().SetFileReader("file", name, bytes.NewReader(data))
+	req := resty.New().R().SetFileReader("file", name, bytes.NewReader(data))
 	if user != "" {
 		req.SetHeader("X-User-ID", user)
 	}
 	return send(t, req, http.MethodPost, srv.URL+"/api/v1/avatars")
 }
 
-func send(t *testing.T, req *resty.Request, method, url string) (*http.Response, []byte) {
+func send(t *testing.T, req *resty.Request, method, url string) (*resty.Response, []byte) {
 	t.Helper()
 	resp, err := req.Execute(method, url)
 	require.NoError(t, err, "сервер не ответил")
-	return resp.RawResponse, resp.Body()
+	return resp, resp.Body()
 }
 
 func decode(body []byte) map[string]any {
@@ -142,24 +139,24 @@ func decode(body []byte) map[string]any {
 	return got
 }
 
-func idOf(_ *http.Response, body []byte) string {
+func idOf(_ *resty.Response, body []byte) string {
 	id, _ := decode(body)["id"].(string)
 	return id
 }
 
-func get(t *testing.T, srv *httptest.Server, path string, header ...string) (*http.Response, []byte) {
+func get(t *testing.T, srv *httptest.Server, path string, header ...string) (*resty.Response, []byte) {
 	t.Helper()
-	req := client.R()
+	req := resty.New().R()
 	for i := 0; i+1 < len(header); i += 2 {
 		req.SetHeader(header[i], header[i+1])
 	}
 	return send(t, req, http.MethodGet, srv.URL+path)
 }
 
-func expect(t *testing.T, resp *http.Response, body []byte, status int, want map[string]any) {
+func expect(t *testing.T, resp *resty.Response, body []byte, status int, want map[string]any) {
 	t.Helper()
 	got := decode(body)
-	assert.Equal(t, status, resp.StatusCode, "тело %v", got)
+	assert.Equal(t, status, resp.StatusCode(), "тело %v", got)
 	assert.Subset(t, got, want)
 }
 
@@ -170,24 +167,24 @@ func TestUpload(t *testing.T) {
 	got := decode(raw)
 	id, _ := got["id"].(string)
 	require.NotEmpty(t, id, "в ответе нет id")
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	assert.Equal(t, http.StatusCreated, resp.StatusCode())
 	assert.Equal(t, `{"id":"`+id+`","user_id":"alice","url":"/api/v1/avatars/`+id+`","status":"processing",`+
 		`"created_at":"2026-10-23T12:00:00Z"}`+"\n", string(raw), "ожидались поля и порядок из ТЗ")
 	file, body := get(t, srv, got["url"].(string))
-	assert.Equal(t, http.StatusOK, file.StatusCode)
-	assert.Equal(t, "image/png", file.Header.Get("Content-Type"))
+	assert.Equal(t, http.StatusOK, file.StatusCode())
+	assert.Equal(t, "image/png", file.Header().Get("Content-Type"))
 	assert.True(t, bytes.Equal(data, body), "по ссылке ожидался тот же PNG")
 }
 
 func TestUploadFromPage(t *testing.T) {
 	srv, _ := start(t)
 	resp, body := get(t, srv, "/")
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+	assert.Equal(t, "text/html; charset=utf-8", resp.Header().Get("Content-Type"))
 	assert.Contains(t, string(body), "formData.append('image'", "ожидалась страница из шаблона")
-	req := client.R().SetHeader("X-User-ID", "alice").SetFileReader("image", "me.png", bytes.NewReader(pngBytes(t, 4, 4, 0)))
+	req := resty.New().R().SetHeader("X-User-ID", "alice").SetFileReader("image", "me.png", bytes.NewReader(pngBytes(t, 4, 4, 0)))
 	resp, raw := send(t, req, http.MethodPost, srv.URL+"/api/v1/avatars")
-	assert.Equal(t, http.StatusCreated, resp.StatusCode, "загрузка со страницы не принята, ответ %s", raw)
+	assert.Equal(t, http.StatusCreated, resp.StatusCode(), "загрузка со страницы не принята, ответ %s", raw)
 }
 
 func TestUploadErrors(t *testing.T) {
@@ -197,13 +194,13 @@ func TestUploadErrors(t *testing.T) {
 	resp, got = upload(t, srv, "alice", "big.png", pngBytes(t, 1, 1, avatar.MaxSize))
 	expect(t, resp, got, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large"})
 	resp, raw := upload(t, srv, "alice", "photo.jpg", []byte("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"))
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode())
 	assert.Equal(t, `{"error":"Invalid file format","details":"Supported formats: jpeg, png, webp"}`+"\n", string(raw))
 	resp, got = upload(t, srv, "", "me.png", pngBytes(t, 1, 1, 0))
 	expect(t, resp, got, http.StatusBadRequest, map[string]any{"error": "неверный идентификатор пользователя"})
-	resp, body := send(t, client.R().SetHeader("X-User-ID", "alice").SetBody("{}"), http.MethodPost, srv.URL+"/api/v1/avatars")
+	resp, body := send(t, resty.New().R().SetHeader("X-User-ID", "alice").SetBody("{}"), http.MethodPost, srv.URL+"/api/v1/avatars")
 	expect(t, resp, body, http.StatusBadRequest, map[string]any{"error": "неверный запрос: не передан файл"})
-	req := client.R().SetHeader("X-User-ID", "alice").SetFormData(map[string]string{"pad": strings.Repeat("x", avatar.MaxSize+1<<20)}).
+	req := resty.New().R().SetHeader("X-User-ID", "alice").SetFormData(map[string]string{"pad": strings.Repeat("x", avatar.MaxSize+1<<20)}).
 		SetFileReader("file", "me.png", bytes.NewReader(pngBytes(t, 1, 1, 0)))
 	resp, body = send(t, req, http.MethodPost, srv.URL+"/api/v1/avatars")
 	expect(t, resp, body, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large"})
@@ -219,7 +216,7 @@ func TestMetadataAndList(t *testing.T) {
 	me := idOf(upload(t, srv, "alice", "me.png", pngBytes(t, 1920, 1080, 0)))
 	id := me
 	resp, body := get(t, srv, "/api/v1/avatars/"+id+"/metadata")
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
 	assert.Equal(t, fmt.Sprintf(`{"id":"%s","user_id":"alice","file_name":"me.png","mime_type":"image/png","size":%d,`+
 		`"dimensions":{"width":1920,"height":1080},"thumbnails":[],"created_at":"2026-10-23T12:01:00Z",`+
 		`"updated_at":"2026-10-23T12:01:00Z","status":"processing"}`+"\n", id, len(pngBytes(t, 1920, 1080, 0))), string(body), "ожидались поля и порядок из ТЗ")
@@ -243,21 +240,21 @@ func TestCurrentAndCache(t *testing.T) {
 	upload(t, srv, "alice", "b.png", b)
 	cur, body := get(t, srv, "/api/v1/users/alice/avatar")
 	assert.Equal(t, b, body, "текущей ожидалась B")
-	assert.Equal(t, "no-cache", cur.Header.Get("Cache-Control"))
-	assert.Equal(t, etag(b), cur.Header.Get("ETag"))
+	assert.Equal(t, "no-cache", cur.Header().Get("Cache-Control"))
+	assert.Equal(t, etag(b), cur.Header().Get("ETag"))
 	byID, _ := get(t, srv, "/api/v1/avatars/"+first+"?size=original")
-	assert.Equal(t, "max-age=86400", byID.Header.Get("Cache-Control"), "ответ по id")
-	again, body := get(t, srv, "/api/v1/avatars/"+first, "If-None-Match", byID.Header.Get("ETag"))
-	assert.Equal(t, http.StatusNotModified, again.StatusCode, "повтор с ETag")
+	assert.Equal(t, "max-age=86400", byID.Header().Get("Cache-Control"), "ответ по id")
+	again, body := get(t, srv, "/api/v1/avatars/"+first, "If-None-Match", byID.Header().Get("ETag"))
+	assert.Equal(t, http.StatusNotModified, again.StatusCode(), "повтор с ETag")
 	assert.Empty(t, body, "у ответа 304 есть тело")
 	again, _ = get(t, srv, "/api/v1/users/alice/avatar", "If-None-Match", etag(b))
-	assert.Equal(t, http.StatusNotModified, again.StatusCode, "повтор текущей с ETag")
+	assert.Equal(t, http.StatusNotModified, again.StatusCode(), "повтор текущей с ETag")
 	sized, body := get(t, srv, "/api/v1/avatars/"+first+"?size=100x100")
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(body))
 	require.NoError(t, err, "до обработки ожидалась миниатюра")
 	assert.Equal(t, []any{"jpeg", 100, 100}, []any{format, cfg.Width, cfg.Height})
-	assert.Equal(t, "image/jpeg", sized.Header.Get("Content-Type"))
-	assert.Equal(t, "max-age=86400", sized.Header.Get("Cache-Control"))
+	assert.Equal(t, "image/jpeg", sized.Header().Get("Content-Type"))
+	assert.Equal(t, "max-age=86400", sized.Header().Get("Cache-Control"))
 }
 
 func TestFormat(t *testing.T) {
@@ -266,17 +263,17 @@ func TestFormat(t *testing.T) {
 	id := idOf(upload(t, srv, "alice", "a.png", data))
 	for _, format := range []string{"jpeg", "webp"} {
 		resp, body := get(t, srv, "/api/v1/avatars/"+id+"?format="+format)
-		require.Equal(t, http.StatusOK, resp.StatusCode, format)
-		assert.Equal(t, "image/"+format, resp.Header.Get("Content-Type"))
-		assert.Equal(t, etag(body), resp.Header.Get("ETag"))
-		assert.Equal(t, "max-age=86400", resp.Header.Get("Cache-Control"))
+		require.Equal(t, http.StatusOK, resp.StatusCode(), format)
+		assert.Equal(t, "image/"+format, resp.Header().Get("Content-Type"))
+		assert.Equal(t, etag(body), resp.Header().Get("ETag"))
+		assert.Equal(t, "max-age=86400", resp.Header().Get("Cache-Control"))
 		_, got, err := image.DecodeConfig(bytes.NewReader(body))
 		require.NoError(t, err, format)
 		assert.Equal(t, format, got)
 	}
 	resp, body := get(t, srv, "/api/v1/users/alice/avatar?format=png")
 	assert.Equal(t, data, body, "тот же формат ожидался без перекодирования")
-	assert.Equal(t, "no-cache", resp.Header.Get("Cache-Control"))
+	assert.Equal(t, "no-cache", resp.Header().Get("Cache-Control"))
 	m.rows[0].Dimensions = avatar.Dimensions{Width: 10000, Height: 10000}
 	resp, body = get(t, srv, "/api/v1/avatars/"+id+"?format=jpeg")
 	expect(t, resp, body, http.StatusBadRequest, map[string]any{"error": avatar.ErrTooManyPixels.Error()})
@@ -318,11 +315,11 @@ func TestThumbnails(t *testing.T) {
 	m.objects["thumbnails/"+id+"/100x100.jpg"] = []byte("миниатюра")
 	resp, body := get(t, srv, "/api/v1/avatars/"+id+"?size=100x100")
 	assert.Equal(t, "миниатюра", string(body))
-	assert.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"))
-	assert.Equal(t, "max-age=86400", resp.Header.Get("Cache-Control"))
-	assert.Equal(t, etag(body), resp.Header.Get("ETag"))
-	again, _ := get(t, srv, "/api/v1/avatars/"+id+"?size=100x100", "If-None-Match", resp.Header.Get("ETag"))
-	assert.Equal(t, http.StatusNotModified, again.StatusCode)
+	assert.Equal(t, "image/jpeg", resp.Header().Get("Content-Type"))
+	assert.Equal(t, "max-age=86400", resp.Header().Get("Cache-Control"))
+	assert.Equal(t, etag(body), resp.Header().Get("ETag"))
+	again, _ := get(t, srv, "/api/v1/avatars/"+id+"?size=100x100", "If-None-Match", resp.Header().Get("ETag"))
+	assert.Equal(t, http.StatusNotModified, again.StatusCode())
 	_, body = get(t, srv, "/api/v1/avatars/"+id+"/metadata")
 	assert.Equal(t, []any{
 		map[string]any{"size": "100x100", "url": "/api/v1/avatars/" + id + "?size=100x100"},
@@ -338,7 +335,7 @@ func TestHealth(t *testing.T) {
 		"postgres": ok, "rabbitmq": ok, "s3": func(context.Context) error { return broken }})))
 	t.Cleanup(srv.Close)
 	resp, body := get(t, srv, "/health")
-	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode())
 	assert.NotContains(t, string(body), broken.Error(), "текст ошибки в ответе")
 	details := decode(body)["details"].(map[string]any)
 	assert.Equal(t, "down", details["s3"].(map[string]any)["status"])
@@ -346,12 +343,12 @@ func TestHealth(t *testing.T) {
 	srv = httptest.NewServer(api.Health(map[string]func(context.Context) error{"postgres": ok}))
 	t.Cleanup(srv.Close)
 	resp, _ = get(t, srv, "/")
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
 }
 
-func remove(t *testing.T, srv *httptest.Server, user, path string) (*http.Response, []byte) {
+func remove(t *testing.T, srv *httptest.Server, user, path string) (*resty.Response, []byte) {
 	t.Helper()
-	req := client.R()
+	req := resty.New().R()
 	if user != "" {
 		req.SetHeader("X-User-ID", user)
 	}
@@ -364,9 +361,9 @@ func TestDelete(t *testing.T) {
 	resp, body := remove(t, srv, "bob", "/api/v1/avatars/"+id)
 	expect(t, resp, body, http.StatusForbidden, map[string]any{"error": "Forbidden", "details": "You can only delete your own avatars"})
 	resp, body = remove(t, srv, "", "/api/v1/avatars/"+id)
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "без X-User-ID: %s", body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode(), "без X-User-ID: %s", body)
 	resp, body = remove(t, srv, "alice", "/api/v1/avatars/"+id)
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode, "удаление: %s", body)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode(), "удаление: %s", body)
 	assert.Empty(t, body, "у ответа 204 есть тело")
 	resp, body = get(t, srv, "/api/v1/avatars/"+id)
 	expect(t, resp, body, http.StatusNotFound, map[string]any{"error": "Avatar not found"})
@@ -382,11 +379,11 @@ func TestDeleteCurrent(t *testing.T) {
 	resp, body := remove(t, srv, "bob", "/api/v1/users/a%2Fb/avatar")
 	expect(t, resp, body, http.StatusForbidden, map[string]any{"error": "Forbidden"})
 	resp, body = remove(t, srv, "a/b", "/api/v1/users/a%2Fb/avatar")
-	assert.Equal(t, http.StatusNoContent, resp.StatusCode, "удаление текущей: %s", body)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode(), "удаление текущей: %s", body)
 	resp, _ = get(t, srv, "/api/v1/avatars/"+first+"/metadata")
-	require.Equal(t, http.StatusOK, resp.StatusCode, "предыдущая аватарка удалена")
+	require.Equal(t, http.StatusOK, resp.StatusCode(), "предыдущая аватарка удалена")
 	resp, current := get(t, srv, "/api/v1/users/a%2Fb/avatar")
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, resp.StatusCode())
 	assert.Equal(t, pngBytes(t, 2, 2, 0), current, "текущей не стала предыдущая")
 }
 
@@ -395,19 +392,19 @@ func TestDeleteUnavailable(t *testing.T) {
 	id := idOf(upload(t, srv, "alice", "a.png", pngBytes(t, 2, 2, 0)))
 	m.pubErr = errBroken
 	resp, body := remove(t, srv, "alice", "/api/v1/avatars/"+id)
-	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode, "тело %s", body)
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode(), "тело %s", body)
 	resp, _ = get(t, srv, "/api/v1/avatars/"+id)
-	assert.Equal(t, http.StatusOK, resp.StatusCode, "аватарка не читается после отката")
+	assert.Equal(t, http.StatusOK, resp.StatusCode(), "аватарка не читается после отката")
 }
 
 func TestRateLimit(t *testing.T) {
 	srv, _ := start(t)
 	for range 100 {
 		resp, _ := get(t, srv, "/health")
-		require.Equal(t, http.StatusNotFound, resp.StatusCode)
+		require.Equal(t, http.StatusNotFound, resp.StatusCode())
 	}
 	resp, _ := get(t, srv, "/health")
-	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "101-й запрос с одного IP")
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode(), "101-й запрос с одного IP")
 }
 
 func TestWebUpload(t *testing.T) {
@@ -415,24 +412,24 @@ func TestWebUpload(t *testing.T) {
 	page, _ := get(t, srv, "/")
 	_, root := get(t, srv, "/")
 	resp, body := get(t, srv, "/web/upload")
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, page.Header.Get("Content-Type"), resp.Header.Get("Content-Type"))
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+	assert.Equal(t, page.Header().Get("Content-Type"), resp.Header().Get("Content-Type"))
 	assert.Equal(t, root, body, "ожидалась страница из шаблона")
 	data := pngBytes(t, 4, 4, 0)
-	req := client.R().SetHeader("X-User-ID", "alice").SetFileReader("image", "me.png", bytes.NewReader(data))
+	req := resty.New().R().SetHeader("X-User-ID", "alice").SetFileReader("image", "me.png", bytes.NewReader(data))
 	resp, raw := send(t, req, http.MethodPost, srv.URL+"/web/upload")
 	got := decode(raw)
 	id, _ := got["id"].(string)
 	require.NotEmpty(t, id, "в ответе нет id, ответ %s", raw)
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	assert.Equal(t, http.StatusCreated, resp.StatusCode())
 	assert.Equal(t, `{"id":"`+id+`","user_id":"alice","url":"/api/v1/avatars/`+id+`","status":"processing",`+
 		`"created_at":"2026-10-23T12:00:00Z"}`+"\n", string(raw), "ожидался ответ как у API")
 	_, file := get(t, srv, got["url"].(string))
 	assert.True(t, bytes.Equal(data, file), "по ссылке ожидался тот же PNG")
-	req = client.R().SetFileReader("image", "me.png", bytes.NewReader(data))
+	req = resty.New().R().SetFileReader("image", "me.png", bytes.NewReader(data))
 	resp, raw = send(t, req, http.MethodPost, srv.URL+"/web/upload")
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "без X-User-ID, ответ %s", raw)
-	req = client.R().SetHeader("X-User-ID", "alice").SetFileReader("image", "big.png", bytes.NewReader(make([]byte, 12<<20)))
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode(), "без X-User-ID, ответ %s", raw)
+	req = resty.New().R().SetHeader("X-User-ID", "alice").SetFileReader("image", "big.png", bytes.NewReader(make([]byte, 12<<20)))
 	resp, raw = send(t, req, http.MethodPost, srv.URL+"/web/upload")
 	expect(t, resp, raw, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large", "max_size": float64(avatar.MaxSize)})
 }
@@ -446,8 +443,8 @@ func TestWebGallery(t *testing.T) {
 	assert.Contains(t, string(root), `id="galleryView"`, "в приложении нет галереи")
 	for _, path := range []string{"/web/gallery/alice", "/web/gallery/%61lice", "/web/gallery/"} {
 		resp, body := get(t, srv, path)
-		assert.Equal(t, http.StatusOK, resp.StatusCode, path)
-		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"), path)
+		assert.Equal(t, http.StatusOK, resp.StatusCode(), path)
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header().Get("Content-Type"), path)
 		assert.Equal(t, root, body, "ожидалось то же приложение по %s", path)
 	}
 }

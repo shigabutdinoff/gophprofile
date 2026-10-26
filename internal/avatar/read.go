@@ -52,6 +52,6 @@ func (s *Service) Read(ctx context.Context, a Avatar, size string) ([]byte, stri
 	}
 	var w, h int
 	_, _ = fmt.Sscanf(size, "%dx%d", &w, &h)
-	data, err = transcode(ctx, a, data, "jpeg", func(img image.Image) image.Image { return Resize(img, w, h) })
+	data, err = s.transcode(ctx, a, data, "jpeg", func(img image.Image) image.Image { return Resize(img, w, h) })
 	return data, "image/jpeg", err
 }

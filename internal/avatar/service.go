@@ -54,12 +54,13 @@ type Service struct {
 	repo      Repository
 	files     Storage
 	publisher Publisher
+	slot      chan struct{}
 }
 
 // New собирает сервис над метаданными repo, файлами files и брокером
 // publisher.
 func New(repo Repository, files Storage, publisher Publisher) *Service {
-	return &Service{repo: repo, files: files, publisher: publisher}
+	return &Service{repo: repo, files: files, publisher: publisher, slot: make(chan struct{}, 1)}
 }
 
 // Upload проверяет и сохраняет файл data с именем name пользователя userID.

@@ -39,7 +39,7 @@ func (s *Service) remove(ctx context.Context, userID string, a Avatar) error {
 	}
 	ctx = context.WithoutCancel(ctx)
 	keys := []string{a.S3Key}
-	for _, op := range thumbnails {
+	for _, op := range thumbnails() {
 		keys = append(keys, thumbKey(a.ID, op))
 	}
 	if err := s.PublishDeleteEvent(ctx, a.ID, keys); err != nil {

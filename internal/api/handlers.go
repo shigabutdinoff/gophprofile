@@ -72,7 +72,7 @@ func (h handler) file(w http.ResponseWriter, r *http.Request) {
 		data, a.MIMEType, err = h.svc.Read(r.Context(), a, size)
 	}
 	if err == nil && format != "" {
-		data, a.MIMEType, err = avatar.Convert(r.Context(), a, data, format)
+		data, a.MIMEType, err = h.svc.Convert(r.Context(), a, data, format)
 	}
 	if err != nil {
 		fail(w, r, err)

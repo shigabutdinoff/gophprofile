@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httprate"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
@@ -39,7 +40,10 @@ func New(svc *avatar.Service, health http.Handler) http.Handler {
 	r.Get("/api/v1/users/{user_id}/avatar", h.file)
 	r.Delete("/api/v1/avatars/{id}", h.remove)
 	r.Delete("/api/v1/users/{user_id}/avatar", h.remove)
-	return httprate.LimitByIP(100, time.Minute)(http.MaxBytesHandler(r, avatar.MaxSize+(1<<20)))
+	limit := httprate.LimitBy(100, time.Minute, func(r *http.Request) (string, error) {
+		return httprate.CanonicalizeIP(middleware.GetClientIP(r.Context())), nil
+	})
+	return middleware.ClientIPFromRemoteAddr(limit(http.MaxBytesHandler(r, avatar.MaxSize+(1<<20))))
 }
 
 func spa(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(web.Index) }

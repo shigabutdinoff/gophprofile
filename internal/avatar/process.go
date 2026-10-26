@@ -8,7 +8,7 @@ import (
 	"log/slog"
 )
 
-var thumbnails = []ProcessingOp{{100, 100}, {300, 300}}
+func thumbnails() []ProcessingOp { return []ProcessingOp{{100, 100}, {300, 300}} }
 
 // HandleUploadEvent делает JPEG миниатюры 100x100 и 300x300 из оригинала
 // события e и ставит аватарке StatusCompleted. Аватарка не в обработке даёт
@@ -24,7 +24,7 @@ func (s *Service) HandleUploadEvent(ctx context.Context, e AvatarUploadEvent) er
 	if err != nil {
 		return err
 	}
-	release, err := acquire(ctx, a)
+	release, err := s.acquire(ctx, a)
 	if errors.Is(err, ErrTooManyPixels) {
 		return fmt.Errorf("%w: %w", ErrPermanent, err)
 	}
@@ -40,7 +40,7 @@ func (s *Service) HandleUploadEvent(ctx context.Context, e AvatarUploadEvent) er
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrPermanent, err)
 	}
-	return s.process(ctx, img, AvatarProcessEvent{AvatarID: a.ID, Operations: thumbnails})
+	return s.process(ctx, img, AvatarProcessEvent{AvatarID: a.ID, Operations: thumbnails()})
 }
 
 func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessEvent) error {
@@ -70,8 +70,8 @@ func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessE
 }
 
 func (s *Service) gone(ctx context.Context, id string) error {
-	keys := make([]string, 0, len(thumbnails))
-	for _, op := range thumbnails {
+	keys := make([]string, 0, len(thumbnails()))
+	for _, op := range thumbnails() {
 		keys = append(keys, thumbKey(id, op))
 	}
 	if err := s.drop(ctx, keys); err != nil {

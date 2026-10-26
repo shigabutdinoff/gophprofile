@@ -27,31 +27,29 @@ func ValidFormat(format string) bool {
 // Convert перекодирует оригинал data аватарки a в формат format и возвращает
 // его MIME тип. Оригинал в том же формате возвращается как есть. Картинка
 // больше MaxPixels даёт ErrTooManyPixels.
-func Convert(ctx context.Context, a Avatar, data []byte, format string) ([]byte, string, error) {
+func (s *Service) Convert(ctx context.Context, a Avatar, data []byte, format string) ([]byte, string, error) {
 	mime := "image/" + format
 	if mime == a.MIMEType {
 		return data, mime, nil
 	}
-	out, err := transcode(ctx, a, data, format, func(img image.Image) image.Image { return img })
+	out, err := s.transcode(ctx, a, data, format, func(img image.Image) image.Image { return img })
 	return out, mime, err
 }
 
-var slot = make(chan struct{}, 1)
-
-func acquire(ctx context.Context, a Avatar) (func(), error) {
+func (s *Service) acquire(ctx context.Context, a Avatar) (func(), error) {
 	if a.Dimensions.Width*a.Dimensions.Height > MaxPixels {
 		return nil, ErrTooManyPixels
 	}
 	select {
-	case slot <- struct{}{}:
-		return func() { <-slot }, nil
+	case s.slot <- struct{}{}:
+		return func() { <-s.slot }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-func transcode(ctx context.Context, a Avatar, data []byte, format string, change func(image.Image) image.Image) ([]byte, error) {
-	release, err := acquire(ctx, a)
+func (s *Service) transcode(ctx context.Context, a Avatar, data []byte, format string, change func(image.Image) image.Image) ([]byte, error) {
+	release, err := s.acquire(ctx, a)
 	if err != nil {
 		return nil, err
 	}

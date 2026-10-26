@@ -14,10 +14,11 @@ import (
 )
 
 func TestConvert(t *testing.T) {
+	svc, _, _ := newService()
 	orig := pngBytes(t, 3, 2)
 	a := avatar.Avatar{MIMEType: "image/png", Dimensions: avatar.Dimensions{Width: 3, Height: 2}}
 	for _, format := range []string{"jpeg", "webp"} {
-		data, mime, err := avatar.Convert(t.Context(), a, orig, format)
+		data, mime, err := svc.Convert(t.Context(), a, orig, format)
 		require.NoError(t, err, format)
 		assert.Equal(t, "image/"+format, mime)
 		cfg, got, err := image.DecodeConfig(bytes.NewReader(data))
@@ -25,22 +26,22 @@ func TestConvert(t *testing.T) {
 		assert.Equal(t, format, got)
 		assert.Equal(t, 3, cfg.Width, format)
 	}
-	same, mime, err := avatar.Convert(t.Context(), a, orig, "png")
+	same, mime, err := svc.Convert(t.Context(), a, orig, "png")
 	require.NoError(t, err)
 	assert.Equal(t, "image/png", mime)
 	assert.Equal(t, orig, same, "тот же формат ожидался без перекодирования")
 	var buf bytes.Buffer
 	require.NoError(t, png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, 3, 2))))
-	data, _, err := avatar.Convert(t.Context(), a, buf.Bytes(), "jpeg")
+	data, _, err := svc.Convert(t.Context(), a, buf.Bytes(), "jpeg")
 	require.NoError(t, err)
 	img, _, err := image.Decode(bytes.NewReader(data))
 	require.NoError(t, err)
 	r, g, b, _ := img.At(1, 1).RGBA()
 	assert.True(t, r > 0xf000 && g > 0xf000 && b > 0xf000, "прозрачное стало не белым")
-	_, _, err = avatar.Convert(t.Context(), a, []byte("битый"), "jpeg")
+	_, _, err = svc.Convert(t.Context(), a, []byte("битый"), "jpeg")
 	assert.Error(t, err, "битый файл перекодирован")
 	a.Dimensions = avatar.Dimensions{Width: 10000, Height: 10000}
-	_, _, err = avatar.Convert(t.Context(), a, orig, "jpeg")
+	_, _, err = svc.Convert(t.Context(), a, orig, "jpeg")
 	assert.ErrorIs(t, err, avatar.ErrTooManyPixels)
 }
 
