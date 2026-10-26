@@ -242,7 +242,8 @@ func TestUploadRejects(t *testing.T) {
 		{"no_user", "", []byte("x"), avatar.ErrUserID},
 		{"nul_user", "a\x00", []byte("x"), avatar.ErrUserID},
 		{"utf8_user", "Jos\xe9", []byte("x"), avatar.ErrUserID},
-		{"long_user", strings.Repeat("я", 256), []byte("x"), avatar.ErrUserID},
+		{"cyrillic_user", "пользователь", []byte("x"), avatar.ErrUserID},
+		{"long_user", strings.Repeat("a", 256), []byte("x"), avatar.ErrUserID},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -257,7 +258,7 @@ func TestUploadRejects(t *testing.T) {
 
 func TestUploadUserLimit(t *testing.T) {
 	svc, _, _ := newService()
-	_, err := svc.Upload(context.Background(), strings.Repeat("я", 255), "a", pngBytes(t, 1, 1))
+	_, err := svc.Upload(context.Background(), strings.Repeat("a", 255), "a", pngBytes(t, 1, 1))
 	assert.NoError(t, err, "идентификатор из 255 символов отклонён")
 }
 

@@ -22,13 +22,16 @@ type handler struct {
 }
 
 // New собирает обработчик маршрутов загрузки, чтения и удаления аватарок
-// над svc и страницы загрузки по корню. Состояние служб отдаёт health.
+// над svc и веб приложения. Состояние служб отдаёт health.
 // С одного IP принимается не больше 100 запросов в минуту.
 func New(svc *avatar.Service, health http.Handler) http.Handler {
 	h := handler{svc: svc}
 	r := chi.NewRouter()
 	r.Method(http.MethodGet, "/health", health)
-	r.Get("/", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(web.Index) })
+	r.Get("/", spa)
+	r.Get("/web/upload", spa)
+	r.Post("/web/upload", h.upload)
+	r.Get("/web/gallery/*", spa)
 	r.Post("/api/v1/avatars", h.upload)
 	r.Get("/api/v1/avatars/{id}", h.file)
 	r.Get("/api/v1/avatars/{id}/metadata", h.metadata)
@@ -38,6 +41,8 @@ func New(svc *avatar.Service, health http.Handler) http.Handler {
 	r.Delete("/api/v1/users/{user_id}/avatar", h.remove)
 	return httprate.LimitByIP(100, time.Minute)(http.MaxBytesHandler(r, avatar.MaxSize+(1<<20)))
 }
+
+func spa(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(web.Index) }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")

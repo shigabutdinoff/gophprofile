@@ -222,12 +222,13 @@ func TestMetadataAndList(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, fmt.Sprintf(`{"id":"%s","user_id":"alice","file_name":"me.png","mime_type":"image/png","size":%d,`+
 		`"dimensions":{"width":1920,"height":1080},"thumbnails":[],"created_at":"2026-10-23T12:01:00Z",`+
-		`"updated_at":"2026-10-23T12:01:00Z"}`+"\n", id, len(pngBytes(t, 1920, 1080, 0))), string(body), "ожидались поля и порядок из ТЗ")
+		`"updated_at":"2026-10-23T12:01:00Z","status":"processing"}`+"\n", id, len(pngBytes(t, 1920, 1080, 0))), string(body), "ожидались поля и порядок из ТЗ")
 	_, body = get(t, srv, "/api/v1/users/alice/avatars")
 	var list []avatar.Avatar
 	require.NoError(t, json.Unmarshal(body, &list))
 	require.Len(t, list, 2)
 	assert.Equal(t, []string{me, first}, []string{list[0].ID, list[1].ID}, "ожидались me.png и old.png")
+	assert.Equal(t, avatar.StatusProcessing, list[0].Status, "в списке нет статуса")
 	_, escaped := get(t, srv, "/api/v1/users/%61lice/avatars")
 	assert.Equal(t, body, escaped, "закодированный идентификатор не раскодирован")
 }
@@ -327,6 +328,7 @@ func TestThumbnails(t *testing.T) {
 		map[string]any{"size": "100x100", "url": "/api/v1/avatars/" + id + "?size=100x100"},
 		map[string]any{"size": "300x300", "url": "/api/v1/avatars/" + id + "?size=300x300"},
 	}, decode(body)["thumbnails"])
+	assert.Equal(t, "completed", decode(body)["status"])
 }
 
 func TestHealth(t *testing.T) {
@@ -406,4 +408,46 @@ func TestRateLimit(t *testing.T) {
 	}
 	resp, _ := get(t, srv, "/health")
 	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "101-й запрос с одного IP")
+}
+
+func TestWebUpload(t *testing.T) {
+	srv, _ := start(t)
+	page, _ := get(t, srv, "/")
+	_, root := get(t, srv, "/")
+	resp, body := get(t, srv, "/web/upload")
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, page.Header.Get("Content-Type"), resp.Header.Get("Content-Type"))
+	assert.Equal(t, root, body, "ожидалась страница из шаблона")
+	data := pngBytes(t, 4, 4, 0)
+	req := client.R().SetHeader("X-User-ID", "alice").SetFileReader("image", "me.png", bytes.NewReader(data))
+	resp, raw := send(t, req, http.MethodPost, srv.URL+"/web/upload")
+	got := decode(raw)
+	id, _ := got["id"].(string)
+	require.NotEmpty(t, id, "в ответе нет id, ответ %s", raw)
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+	assert.Equal(t, `{"id":"`+id+`","user_id":"alice","url":"/api/v1/avatars/`+id+`","status":"processing",`+
+		`"created_at":"2026-10-23T12:00:00Z"}`+"\n", string(raw), "ожидался ответ как у API")
+	_, file := get(t, srv, got["url"].(string))
+	assert.True(t, bytes.Equal(data, file), "по ссылке ожидался тот же PNG")
+	req = client.R().SetFileReader("image", "me.png", bytes.NewReader(data))
+	resp, raw = send(t, req, http.MethodPost, srv.URL+"/web/upload")
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "без X-User-ID, ответ %s", raw)
+	req = client.R().SetHeader("X-User-ID", "alice").SetFileReader("image", "big.png", bytes.NewReader(make([]byte, 12<<20)))
+	resp, raw = send(t, req, http.MethodPost, srv.URL+"/web/upload")
+	expect(t, resp, raw, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large", "max_size": float64(avatar.MaxSize)})
+}
+
+func TestWebGallery(t *testing.T) {
+	srv, _ := start(t)
+	_, root := get(t, srv, "/")
+	for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML"} {
+		assert.NotContains(t, string(root), sink, "приложение не должно разбирать HTML")
+	}
+	assert.Contains(t, string(root), `id="galleryView"`, "в приложении нет галереи")
+	for _, path := range []string{"/web/gallery/alice", "/web/gallery/%61lice", "/web/gallery/"} {
+		resp, body := get(t, srv, path)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, path)
+		assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"), path)
+		assert.Equal(t, root, body, "ожидалось то же приложение по %s", path)
+	}
 }

@@ -24,10 +24,17 @@
     <div class="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl border border-white/20 overflow-hidden">
       <header class="bg-gradient-to-r from-purple-600 to-blue-600 p-6">
         <h1 class="text-3xl font-bold text-white text-center">Avatar Upload Service</h1>
-        <p class="text-white/80 text-center mt-2">Upload your avatar image</p>
+        <p id="subtitle" class="text-white/80 text-center mt-2">Upload your avatar image</p>
+        <nav class="flex justify-center gap-2 mt-4">
+          <a href="/web/upload" data-view="upload"
+            class="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-white/10 hover:bg-white/20 transition-all">Upload</a>
+          <a href="/web/gallery/" data-view="gallery"
+            class="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-white/10 hover:bg-white/20 transition-all">Gallery</a>
+        </nav>
       </header>
 
       <main class="p-6 space-y-6">
+        <section id="uploadView" class="space-y-6">
         <form id="uploadForm" class="space-y-4">
           <div>
             <label for="userId" class="block text-sm font-medium text-white mb-2">
@@ -77,6 +84,18 @@
             </div>
           </div>
         </div>
+        </section>
+
+        <section id="galleryView" class="hidden space-y-6">
+          <form id="galleryForm" class="flex gap-2">
+            <input type="text" id="galleryUser" required placeholder="Enter user ID"
+              class="flex-1 px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all">
+            <button type="submit"
+              class="bg-gradient-to-r from-purple-600 to-blue-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg hover:from-purple-700 hover:to-blue-700 focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-200">Show</button>
+          </form>
+          <p id="galleryEmpty" class="hidden text-white/50 text-center py-8">No avatars yet</p>
+          <ul id="galleryList" class="space-y-4"></ul>
+        </section>
 
         <div id="errorMessage" class="hidden bg-red-500/20 border border-red-500/50 text-red-200 px-4 py-3 rounded-lg">
         </div>
@@ -202,6 +221,133 @@
     function hideResponse() {
       responseContainer.classList.add('hidden');
     }
+
+    const uploadView = document.getElementById('uploadView');
+    const galleryView = document.getElementById('galleryView');
+    const galleryForm = document.getElementById('galleryForm');
+    const galleryUser = document.getElementById('galleryUser');
+    const galleryList = document.getElementById('galleryList');
+    const galleryEmpty = document.getElementById('galleryEmpty');
+    const subtitle = document.getElementById('subtitle');
+    const statusClasses = {
+      completed: 'bg-green-500/20 border border-green-500/50 text-green-200',
+      processing: 'bg-blue-500/20 border border-blue-500/50 text-blue-200',
+      failed: 'bg-red-500/20 border border-red-500/50 text-red-200'
+    };
+
+    async function failure(response) {
+      const status = `HTTP ${response.status} ${response.statusText}`;
+      try {
+        return `${status}: ${(await response.json()).error}`;
+      } catch {
+        return status;
+      }
+    }
+
+    function card(avatar, user) {
+      const item = document.createElement('li');
+      item.className = 'flex items-center gap-4 px-4 py-3 bg-white/10 border border-white/20 rounded-lg';
+      const thumb = avatar.thumbnails.find(t => t.size === '100x100');
+      if (thumb) {
+        const img = document.createElement('img');
+        img.src = thumb.url;
+        img.alt = avatar.file_name;
+        img.className = 'w-20 h-20 object-cover rounded-lg shadow-lg';
+        item.append(img);
+      }
+      const info = document.createElement('div');
+      info.className = 'flex-1 min-w-0 space-y-2';
+      const name = document.createElement('p');
+      name.className = 'text-white font-medium break-all';
+      name.textContent = avatar.file_name;
+      const status = document.createElement('span');
+      status.className = `inline-block px-2 py-1 rounded-lg font-mono text-xs ${statusClasses[avatar.status] || ''}`;
+      status.textContent = avatar.status;
+      info.append(name, status);
+      const button = document.createElement('button');
+      button.textContent = 'Delete';
+      button.className = 'bg-red-500/20 border border-red-500/50 text-red-200 font-semibold py-2 px-4 rounded-lg hover:bg-red-500/30 focus:outline-none focus:ring-2 focus:ring-red-500 transition-all duration-200 disabled:opacity-50';
+      button.addEventListener('click', async () => {
+        hideError();
+        button.disabled = true;
+        button.textContent = 'Deleting...';
+        try {
+          const response = await fetch(`/api/v1/avatars/${encodeURIComponent(avatar.id)}`, {
+            method: 'DELETE',
+            headers: {
+              'X-User-ID': user
+            }
+          });
+          if (response.status !== 204) {
+            showError(await failure(response));
+            return;
+          }
+          item.remove();
+          galleryEmpty.classList.toggle('hidden', galleryList.children.length > 0);
+        } catch (error) {
+          showError(`Network error: ${error.message}`);
+        } finally {
+          button.disabled = false;
+          button.textContent = 'Delete';
+        }
+      });
+      item.append(info, button);
+      return item;
+    }
+
+    async function loadGallery(user) {
+      galleryList.replaceChildren();
+      galleryEmpty.classList.add('hidden');
+      if (!user) {
+        return;
+      }
+      try {
+        const response = await fetch(`/api/v1/users/${encodeURIComponent(user)}/avatars`);
+        if (!response.ok) {
+          showError(await failure(response));
+          return;
+        }
+        const avatars = await response.json();
+        galleryList.append(...avatars.map(avatar => card(avatar, user)));
+        galleryEmpty.classList.toggle('hidden', avatars.length > 0);
+      } catch (error) {
+        showError(`Network error: ${error.message}`);
+      }
+    }
+
+    function route() {
+      hideError();
+      const gallery = location.pathname.startsWith('/web/gallery/');
+      uploadView.classList.toggle('hidden', gallery);
+      galleryView.classList.toggle('hidden', !gallery);
+      subtitle.textContent = gallery ? 'Browse and delete avatars' : 'Upload your avatar image';
+      document.querySelectorAll('nav a').forEach(link => {
+        link.classList.toggle('bg-white/30', (link.dataset.view === 'gallery') === gallery);
+      });
+      if (gallery) {
+        galleryUser.value = decodeURIComponent(location.pathname.slice('/web/gallery/'.length));
+        loadGallery(galleryUser.value);
+      }
+    }
+
+    function go(path) {
+      history.pushState(null, '', path);
+      route();
+    }
+
+    document.querySelectorAll('nav a').forEach(link => link.addEventListener('click', e => {
+      e.preventDefault();
+      const user = galleryUser.value || document.getElementById('userId').value;
+      go(link.dataset.view === 'gallery' ? `/web/gallery/${encodeURIComponent(user)}` : '/web/upload');
+    }));
+
+    galleryForm.addEventListener('submit', e => {
+      e.preventDefault();
+      go(`/web/gallery/${encodeURIComponent(galleryUser.value)}`);
+    });
+
+    window.addEventListener('popstate', route);
+    route();
   </script>
 </body>
 

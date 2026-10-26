@@ -30,6 +30,7 @@ type metadata struct {
 	Thumbnails []thumbnail       `json:"thumbnails"`
 	CreatedAt  time.Time         `json:"created_at"`
 	UpdatedAt  time.Time         `json:"updated_at"`
+	Status     avatar.Status     `json:"status"`
 }
 
 func stamp(t time.Time) time.Time {
@@ -43,7 +44,7 @@ func describe(a avatar.Avatar) metadata {
 			thumbs = append(thumbs, thumbnail{size, "/api/v1/avatars/" + a.ID + "?size=" + size})
 		}
 	}
-	return metadata{a.ID, a.UserID, a.FileName, a.MIMEType, a.Size, a.Dimensions, thumbs, stamp(a.CreatedAt), stamp(a.UpdatedAt)}
+	return metadata{a.ID, a.UserID, a.FileName, a.MIMEType, a.Size, a.Dimensions, thumbs, stamp(a.CreatedAt), stamp(a.UpdatedAt), a.Status}
 }
 
 func (h handler) metadata(w http.ResponseWriter, r *http.Request) {

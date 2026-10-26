@@ -7,7 +7,6 @@ import (
 	"errors"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 // MaxSize это предел размера файла аватарки в байтах.
@@ -87,8 +86,18 @@ func ValidSize(size string) bool {
 	return size == Original || size == "100x100" || size == "300x300"
 }
 
+// validUserID пускает только печатный ASCII: браузерный fetch не отправит
+// в заголовке X-User-ID символы вне Latin-1, а Latin-1 исказит.
 func validUserID(id string) bool {
-	return id != "" && utf8.ValidString(id) && !strings.ContainsRune(id, 0) && utf8.RuneCountInString(id) <= 255
+	if id == "" || len(id) > 255 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] < 0x20 || id[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func cleanName(name string) string {

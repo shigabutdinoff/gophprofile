@@ -71,7 +71,7 @@ func TestDeleteAgain(t *testing.T) {
 
 func TestDeleteUserID(t *testing.T) {
 	svc, _, _, pub, a := published(t)
-	for _, user := range []string{"", strings.Repeat("я", 256)} {
+	for _, user := range []string{"", "пользователь", strings.Repeat("a", 256)} {
 		assert.ErrorIs(t, svc.Delete(context.Background(), user, a.ID), avatar.ErrUserID)
 		assert.ErrorIs(t, svc.DeleteCurrent(context.Background(), user, "alice"), avatar.ErrUserID)
 	}
