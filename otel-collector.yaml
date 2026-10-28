@@ -1,0 +1,31 @@
+receivers:
+  otlp:
+    protocols:
+      http: {endpoint: 0.0.0.0:4318}
+processors:
+  batch: {}
+  # Клиентские спаны Postgres, MinIO и RabbitMQ выносятся в свои сервисы,
+  # чтобы граф зависимостей Jaeger показал рёбра к ним.
+  transform/peer:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["peer.service"], "postgres") where kind == SPAN_KIND_CLIENT and attributes["db.system.name"] == "postgresql"
+          - set(attributes["peer.service"], "minio") where kind == SPAN_KIND_CLIENT and attributes["server.address"] == "minio"
+          - set(attributes["peer.service"], "rabbitmq") where kind == SPAN_KIND_PRODUCER and attributes["messaging.system"] == "rabbitmq"
+  groupbyattrs/peer:
+    keys: [peer.service]
+  transform/service:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - set(attributes["service.name"], attributes["peer.service"]) where attributes["peer.service"] != nil
+exporters:
+  otlp_grpc/jaeger:
+    endpoint: jaeger:4317
+    tls: {insecure: true}
+service:
+  pipelines:
+    traces: {receivers: [otlp], processors: [transform/peer, groupbyattrs/peer, transform/service, batch], exporters: [otlp_grpc/jaeger]}

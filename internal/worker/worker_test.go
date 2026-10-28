@@ -45,6 +45,8 @@ type service struct {
 	onCall  func()
 	got     avatar.AvatarUploadEvent
 	deleted avatar.AvatarDeleteEvent
+	ctx     context.Context
+	failCtx context.Context
 }
 
 func (s *service) HandleDeleteEvent(ctx context.Context, e avatar.AvatarDeleteEvent) error {
@@ -52,8 +54,9 @@ func (s *service) HandleDeleteEvent(ctx context.Context, e avatar.AvatarDeleteEv
 	return s.HandleUploadEvent(ctx, avatar.AvatarUploadEvent{})
 }
 
-func (s *service) HandleUploadEvent(_ context.Context, e avatar.AvatarUploadEvent) error {
+func (s *service) HandleUploadEvent(ctx context.Context, e avatar.AvatarUploadEvent) error {
 	s.calls++
+	s.ctx = ctx
 	s.got = e
 	if s.onCall != nil {
 		s.onCall()
@@ -68,7 +71,8 @@ func (s *service) HandleUploadEvent(_ context.Context, e avatar.AvatarUploadEven
 	return err
 }
 
-func (s *service) Fail(_ context.Context, id string) error {
+func (s *service) Fail(ctx context.Context, id string) error {
+	s.failCtx = ctx
 	s.failed = append(s.failed, id)
 	return s.failErr
 }

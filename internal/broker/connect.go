@@ -1,9 +1,12 @@
 package broker
 
 import (
+	"context"
 	"errors"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 func connect(url string) (*amqp.Connection, *amqp.Channel, error) {
@@ -31,4 +34,14 @@ func connect(url string) (*amqp.Connection, *amqp.Channel, error) {
 func declare(ch *amqp.Channel, name string, args amqp.Table) error {
 	_, err := ch.QueueDeclare(name, true, false, false, false, args)
 	return err
+}
+
+func headers(ctx context.Context) amqp.Table {
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	table := amqp.Table{}
+	for k, v := range carrier {
+		table[k] = v
+	}
+	return table
 }

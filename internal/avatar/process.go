@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func thumbnails() []ProcessingOp { return []ProcessingOp{{100, 100}, {300, 300}} }
@@ -43,7 +47,9 @@ func (s *Service) HandleUploadEvent(ctx context.Context, e AvatarUploadEvent) er
 	return s.process(ctx, img, AvatarProcessEvent{AvatarID: a.ID, Operations: thumbnails()})
 }
 
-func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessEvent) error {
+func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessEvent) (err error) {
+	ctx, span := otel.Tracer("gophprofile").Start(ctx, "thumbnails")
+	defer func() { _ = end(span, err) }()
 	keys := map[string]string{}
 	for _, op := range e.Operations {
 		size := fmt.Sprintf("%dx%d", op.Width, op.Height)
@@ -56,7 +62,7 @@ func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessE
 			return err
 		}
 	}
-	err := s.repo.UpdateProcessingStatus(ctx, e.AvatarID, StatusCompleted, keys)
+	err = s.repo.UpdateProcessingStatus(ctx, e.AvatarID, StatusCompleted, keys)
 	if errors.Is(err, ErrDone) {
 		_, err = s.repo.GetAvatar(ctx, e.AvatarID)
 		if errors.Is(err, ErrNotFound) {
@@ -66,6 +72,14 @@ func (s *Service) process(ctx context.Context, img image.Image, e AvatarProcessE
 			err = ErrDone
 		}
 	}
+	return err
+}
+
+func end(span trace.Span, err error) error {
+	if err != nil && !errors.Is(err, ErrDone) {
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
 	return err
 }
 

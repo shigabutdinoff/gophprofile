@@ -2,7 +2,8 @@ x-app: &app
   build: .
   image: gophprofile
   restart: unless-stopped
-  environment:
+  environment: &env
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     DATABASE_URL: postgres://avatars:avatars@postgres:5432/avatars?sslmode=disable
     S3_ENDPOINT: http://minio:9000
     S3_ACCESS_KEY: minio
@@ -12,11 +13,13 @@ x-app: &app
     migrate: {condition: service_completed_successfully}
     bucket: {condition: service_completed_successfully}
     rabbitmq: {condition: service_healthy}
+    otel-collector: {condition: service_started}
 
 services:
   server:
     <<: *app
     command: ./server
+    environment: {<<: *env, OTEL_SERVICE_NAME: gophprofile-server}
     ports: ["8080:8080"]
     healthcheck:
       test: [CMD, wget, -qO-, http://localhost:8080/health]
@@ -25,6 +28,7 @@ services:
   worker:
     <<: *app
     command: ./worker
+    environment: {<<: *env, OTEL_SERVICE_NAME: gophprofile-worker}
     healthcheck:
       test: [CMD, pidof, worker]
       interval: 5s
@@ -70,6 +74,15 @@ services:
     entrypoint: [sh, -c, "mc alias set local http://minio:9000 minio minio-secret && mc mb --ignore-existing local/avatars"]
     depends_on:
       minio: {condition: service_healthy}
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    command: [--config=/etc/otel-collector.yaml]
+    volumes: [./otel-collector.yaml:/etc/otel-collector.yaml:ro]
+    depends_on: [jaeger]
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    ports: ["127.0.0.1:16686:16686"]
 
 volumes:
   postgres:

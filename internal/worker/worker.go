@@ -13,6 +13,11 @@ import (
 
 	"github.com/avast/retry-go/v5"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 )
@@ -47,6 +52,16 @@ func Run(ctx context.Context, deliveries <-chan amqp.Delivery, svc Service, grac
 }
 
 func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limit time.Duration) {
+	carrier := propagation.MapCarrier{}
+	for k, v := range d.Headers {
+		if s, ok := v.(string); ok {
+			carrier[k] = s
+		}
+	}
+	work, span := otel.Tracer("gophprofile").Start(otel.GetTextMapPropagator().Extract(work, carrier), "avatars.upload process",
+		trace.WithSpanKind(trace.SpanKindConsumer), trace.WithAttributes(attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", "avatars.upload")))
+	defer span.End()
 	var kind struct {
 		S3Keys []string `json:"s3_keys"`
 	}
@@ -81,6 +96,7 @@ func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limi
 		return
 	default:
 		slog.Error("событие ушло в очередь недоставленных", "id", id, "err", err)
+		span.SetStatus(codes.Error, err.Error())
 		if upload && id != "" {
 			fctx, cancel := context.WithTimeout(work, limit)
 			defer cancel()
