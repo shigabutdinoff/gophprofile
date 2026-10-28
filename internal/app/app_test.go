@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +33,13 @@ func TestOpenErrors(t *testing.T) {
 	a, err := app.Open(context.Background())
 	require.NoError(t, err, "без брокера сервер не стартует")
 	a.Close()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	a, err = app.Open(context.Background())
+	require.NoError(t, err, "недоступный collector мешает запуску")
+	started := time.Now()
+	a.Close()
+	assert.Less(t, time.Since(started), 6*time.Second, "трейсы отправляются дольше таймаута")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	for _, endpoint := range []string{"minio:9000", "http://", "::"} {
 		t.Setenv("S3_ENDPOINT", endpoint)
 		_, err = app.Open(context.Background())

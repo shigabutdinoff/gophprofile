@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httprate"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 	"github.com/shigabutdinoff/gophprofile/web"
@@ -28,6 +29,7 @@ type handler struct {
 func New(svc *avatar.Service, health http.Handler) http.Handler {
 	h := handler{svc: svc}
 	r := chi.NewRouter()
+	r.Use(otelhttp.NewMiddleware("http", otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/health" })))
 	r.Method(http.MethodGet, "/health", health)
 	r.Get("/", spa)
 	r.Get("/web/upload", spa)

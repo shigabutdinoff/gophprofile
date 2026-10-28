@@ -29,7 +29,7 @@ GET    /web/gallery/{user_id}                 # галерея пользова�
 Нужен Docker. Команды вызываются из корня репозитория.
 
 ```sh
-docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672
+docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672, трейсы в Jaeger на http://127.0.0.1:16686
 docker compose down            # остановка с сохранением данных
 docker compose down -v         # остановка с удалением данных
 ```

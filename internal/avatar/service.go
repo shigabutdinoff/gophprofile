@@ -8,6 +8,9 @@ import (
 	_ "image/png"
 	"uuid"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/image/riff"
 	"golang.org/x/image/vp8"
 	"golang.org/x/image/vp8l"
@@ -64,8 +67,8 @@ func New(repo Repository, files Storage, publisher Publisher) *Service {
 }
 
 // Upload проверяет и сохраняет файл data с именем name пользователя userID.
-// Если событие не отправлено, запись и файл удаляются. Если брокер не принял
-// событие, ошибка содержит ErrUnavailable.
+// Если событие не отправлено, запись и файл удаляются, а ошибка содержит
+// ErrUnavailable. Сохранение видно в трейсах спаном upload_avatar.
 func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) (Avatar, error) {
 	if !validUserID(userID) {
 		return Avatar{}, ErrUserID
@@ -83,16 +86,18 @@ func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) 
 	id := uuid.New().String()
 	a := Avatar{ID: id, UserID: userID, FileName: cleanName(name), MIMEType: "image/" + format, Size: int64(len(data)),
 		Dimensions: Dimensions{cfg.Width, cfg.Height}, S3Key: "originals/" + id, Status: StatusProcessing}
+	ctx, span := otel.Tracer("gophprofile").Start(ctx, "upload_avatar", trace.WithAttributes(attribute.String("user_id", userID),
+		attribute.String("file_name", a.FileName), attribute.Int64("file_size", a.Size)))
 	if err := s.files.Upload(ctx, a.S3Key, data); err != nil {
-		return Avatar{}, err
+		return Avatar{}, end(span, err)
 	}
 	if err = s.repo.Create(ctx, &a); err != nil {
-		return Avatar{}, err
+		return Avatar{}, end(span, err)
 	}
 	if err = s.PublishUploadEvent(ctx, a.ID, a.UserID, a.S3Key); err != nil {
-		return Avatar{}, s.rollback(ctx, a, err)
+		return Avatar{}, end(span, s.rollback(ctx, a, err))
 	}
-	return a, nil
+	return a, end(span, nil)
 }
 
 func sameFrame(data []byte, cfg image.Config) error {

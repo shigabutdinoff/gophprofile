@@ -11,6 +11,10 @@ import (
 	"uuid"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -80,8 +84,17 @@ func (b *Broker) channel() (*amqp.Channel, error) {
 }
 
 // Publish отправляет event в exchange с ключом key под новым идентификатором
-// сообщения и ждёт подтверждения брокера не дольше 5 с.
-func (b *Broker) Publish(ctx context.Context, exchange, key string, event any) error {
+// сообщения и ждёт подтверждения брокера не дольше 5 с. Контекст трассировки
+// ctx уходит в заголовках сообщения.
+func (b *Broker) Publish(ctx context.Context, exchange, key string, event any) (err error) {
+	ctx, span := otel.Tracer("gophprofile").Start(ctx, key+" publish", trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(attribute.String("messaging.system", "rabbitmq"), attribute.String("messaging.destination.name", exchange)))
+	defer func() {
+		if err != nil {
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	body, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -93,7 +106,7 @@ func (b *Broker) Publish(ctx context.Context, exchange, key string, event any) e
 	ctx, cancel := context.WithTimeout(ctx, confirm)
 	defer cancel()
 	conf, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchange, key, false, false, amqp.Publishing{
-		ContentType: "application/json", DeliveryMode: amqp.Persistent, MessageId: uuid.New().String(), Body: body})
+		ContentType: "application/json", DeliveryMode: amqp.Persistent, MessageId: uuid.New().String(), Body: body, Headers: headers(ctx)})
 	if err != nil {
 		return err
 	}
