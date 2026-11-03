@@ -1,16 +1,23 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -77,6 +84,40 @@ func TestConsumerSpanStatus(t *testing.T) {
 		assert.Equal(t, c.want, span.Status().Code, name)
 		if svc.failCtx != nil {
 			assert.Equal(t, span.SpanContext(), trace.SpanContextFromContext(svc.failCtx), "%s: отметка сбоя вне trace", name)
+		}
+	}
+}
+
+func bridge(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	exp, err := stdoutlog.New(stdoutlog.WithWriter(&buf))
+	require.NoError(t, err)
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exp)))
+	prev := slog.Default()
+	slog.SetDefault(slog.New(otelslog.NewHandler("test", otelslog.WithLoggerProvider(provider))))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func TestRecordsTrace(t *testing.T) {
+	cases := map[string]struct {
+		svc  *service
+		want string
+	}{
+		"сбой на всех попытках": {&service{replies: []error{errNet}}, "событие ушло в очередь недоставленных"},
+		"сбой и успех":          {&service{replies: []error{errNet, nil}}, "событие не обработано, повтор"},
+		"повтор события":        {&service{replies: []error{avatar.ErrDone}}, "повтор события"},
+		"статус не записан":     {&service{replies: []error{errNet}, failErr: errNet}, "статус сбоя не записан"},
+	}
+	for name, c := range cases {
+		buf := bridge(t)
+		consume(t, context.Background(), c.svc, event, amqp.Table{"traceparent": parent})
+		assert.Contains(t, buf.String(), c.want, name)
+		for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			var r struct{ TraceID string }
+			require.NoError(t, json.Unmarshal([]byte(line), &r), name)
+			assert.Equal(t, "0af7651916cd43dd8448eb211c80319c", r.TraceID, "%s: запись вне trace", name)
 		}
 	}
 }

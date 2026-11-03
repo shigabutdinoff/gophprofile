@@ -6,6 +6,8 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"log/slog"
+	"os"
 	"uuid"
 
 	"go.opentelemetry.io/otel"
@@ -88,6 +90,8 @@ func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) 
 		Dimensions: Dimensions{cfg.Width, cfg.Height}, S3Key: "originals/" + id, Status: StatusProcessing}
 	ctx, span := otel.Tracer("gophprofile").Start(ctx, "upload_avatar", trace.WithAttributes(attribute.String("user_id", userID),
 		attribute.String("file_name", a.FileName), attribute.Int64("file_size", a.Size)))
+	logger := slog.With("service", os.Getenv("OTEL_SERVICE_NAME"), "trace_id", trace.SpanFromContext(ctx).SpanContext().TraceID())
+	logger.InfoContext(ctx, "uploading avatar", "user_id", userID, "file_size", a.Size, "mime_type", a.MIMEType)
 	if err := s.files.Upload(ctx, a.S3Key, data); err != nil {
 		return Avatar{}, end(span, err)
 	}

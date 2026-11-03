@@ -78,7 +78,7 @@ func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limi
 		err = retry.New(retry.Context(ctx), retry.Attempts(6), retry.Delay(pause), retry.MaxDelay(8*pause),
 			retry.DelayType(retry.BackOffDelay), retry.LastErrorOnly(true), retry.RetryIf(lost),
 			retry.OnRetry(func(n uint, err error) {
-				slog.Warn("событие не обработано, повтор", "id", id, "попытка", n+1, "err", err)
+				slog.WarnContext(work, "событие не обработано, повтор", "id", id, "попытка", n+1, "err", err)
 			}),
 		).Do(func() error {
 			attempt, cancel := context.WithTimeout(work, limit)
@@ -88,26 +88,26 @@ func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limi
 	}
 	switch {
 	case errors.Is(err, avatar.ErrDone):
-		slog.Info("повтор события", "id", id)
+		slog.InfoContext(work, "повтор события", "id", id)
 		err = d.Ack(false)
 	case err == nil:
 		err = d.Ack(false)
 	case ctx.Err() != nil && !errors.Is(err, avatar.ErrPermanent):
 		return
 	default:
-		slog.Error("событие ушло в очередь недоставленных", "id", id, "err", err)
+		slog.ErrorContext(work, "событие ушло в очередь недоставленных", "id", id, "err", err)
 		span.SetStatus(codes.Error, err.Error())
 		if upload && id != "" {
 			fctx, cancel := context.WithTimeout(work, limit)
 			defer cancel()
 			if ferr := svc.Fail(fctx, id); ferr != nil {
-				slog.Error("статус сбоя не записан", "id", id, "err", ferr)
+				slog.ErrorContext(fctx, "статус сбоя не записан", "id", id, "err", ferr)
 			}
 		}
 		err = d.Nack(false, false)
 	}
 	if err != nil {
-		slog.Error("ответ брокеру не отправлен", "id", id, "err", err)
+		slog.ErrorContext(work, "ответ брокеру не отправлен", "id", id, "err", err)
 	}
 }
 

@@ -1,7 +1,10 @@
 package avatar_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -68,4 +71,34 @@ func TestThumbnailsSpan(t *testing.T) {
 	last := rec.Ended()[len(rec.Ended())-1]
 	assert.Equal(t, "thumbnails", last.Name())
 	assert.Equal(t, codes.Unset, last.Status().Code, "повтор события помечен ошибкой")
+}
+
+func TestUploadRecord(t *testing.T) {
+	rec := recordSpans(t)
+	t.Setenv("OTEL_SERVICE_NAME", "gophprofile-server")
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	svc, _, _ := newService()
+	data := pngBytes(t, 2, 2)
+	_, err := svc.Upload(context.Background(), "alice", "me.png", data)
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	assert.Equal(t, "INFO", got["level"])
+	assert.Equal(t, "uploading avatar", got["msg"])
+	assert.Equal(t, "gophprofile-server", got["service"])
+	assert.Equal(t, rec.Ended()[0].SpanContext().TraceID().String(), got["trace_id"], "запись вне trace загрузки")
+	assert.Equal(t, "alice", got["user_id"])
+	assert.InDelta(t, len(data), got["file_size"], 0)
+	assert.Equal(t, "image/png", got["mime_type"])
+	buf.Reset()
+	_, err = svc.Upload(context.Background(), "alice", "me.png", []byte("не картинка"))
+	require.ErrorIs(t, err, avatar.ErrInvalidFormat)
+	assert.Empty(t, buf.String(), "отказ валидации дал запись")
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	_, err = svc.Upload(context.Background(), "alice", "me.png", data)
+	require.NoError(t, err)
+	assert.NotContains(t, buf.String(), "uploading avatar", "запись ниже порога")
 }

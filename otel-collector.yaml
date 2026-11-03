@@ -26,6 +26,9 @@ exporters:
   otlp_grpc/jaeger:
     endpoint: jaeger:4317
     tls: {insecure: true}
+  opensearch:
+    http: {endpoint: http://opensearch:9200}
 service:
   pipelines:
     traces: {receivers: [otlp], processors: [transform/peer, groupbyattrs/peer, transform/service, batch], exporters: [otlp_grpc/jaeger]}
+    logs: {receivers: [otlp], processors: [batch], exporters: [opensearch]}

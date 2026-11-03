@@ -29,7 +29,15 @@ GET    /web/gallery/{user_id}                 # галерея пользова�
 Нужен Docker. Команды вызываются из корня репозитория.
 
 ```sh
-docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672, трейсы в Jaeger на http://127.0.0.1:16686
+docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672, трейсы в Jaeger на http://127.0.0.1:16686, логи в OpenSearch Dashboards на http://127.0.0.1:5601
 docker compose down            # остановка с сохранением данных
 docker compose down -v         # остановка с удалением данных
 ```
+
+## Логи
+
+server и worker пишут JSON в stdout и через collector в OpenSearch. Порог задаёт `LOG_LEVEL`: `debug`, `info` (по умолчанию), `warn` или `error`.
+
+- Поиск по запросу: trace ID из Jaeger ищется в Discover OpenSearch Dashboards запросом `traceId:<trace ID>`. Поле `attributes.trace_id` записи `uploading avatar` хранится массивом байтов, по нему не ищется.
+- Фильтры: `severity.text` (уровень) и `resource.service.name` (`gophprofile-server` или `gophprofile-worker`).
+- Алерт на ошибки: монитор «Ошибки в логах» в разделе Alerting раз в минуту ищет записи ERROR за последние 5 минут. Проверка: загрузить файл с верным заголовком PNG, но обрезанными данными. Worker отправит событие в очередь недоставленных, и через минуту появится активный алерт.
