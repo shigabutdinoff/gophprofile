@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 )
@@ -81,4 +83,24 @@ func scan(row pgx.CollectableRow) (avatar.Avatar, error) {
 	err := row.Scan(&a.ID, &a.UserID, &a.FileName, &a.MIMEType, &a.Size, &a.Dimensions.Width, &a.Dimensions.Height, &a.S3Key, &a.ThumbnailKeys,
 		&a.Status, &a.CreatedAt, &a.UpdatedAt)
 	return a, err
+}
+
+// ObserveStorage отдаёт в meter место, занятое неудалёнными аватарками
+// каждого пользователя.
+func (r *Avatars) ObserveStorage(meter metric.Meter) error {
+	_, err := meter.Int64ObservableGauge("avatars.storage", metric.WithUnit("By"),
+		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
+			// Ряд на пользователя только у 1000 самых крупных, остальные
+			// суммируются в ряд без user_id, чтобы метрики влезали в запрос OTLP.
+			rows, _ := r.db.Query(ctx, `SELECT CASE WHEN n <= 1000 THEN user_id ELSE '' END, SUM(total) FROM (
+				SELECT user_id, SUM(size_bytes) AS total, row_number() OVER (ORDER BY SUM(size_bytes) DESC, user_id) AS n
+				FROM avatars WHERE deleted_at IS NULL GROUP BY user_id) t GROUP BY 1`)
+			user, size := "", int64(0)
+			_, err := pgx.ForEachRow(rows, []any{&user, &size}, func() error {
+				o.Observe(size, metric.WithAttributes(attribute.String("user_id", user)))
+				return nil
+			})
+			return err
+		}))
+	return err
 }

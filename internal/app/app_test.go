@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcrabbit "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
+	"go.opentelemetry.io/otel"
 
 	"github.com/shigabutdinoff/gophprofile/internal/app"
 )
@@ -151,4 +152,35 @@ func TestOpenLogLevel(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "warning")
 	_, err := app.Open(context.Background())
 	assert.ErrorContains(t, err, "LOG_LEVEL")
+}
+
+func TestOpenMetrics(t *testing.T) {
+	var mu sync.Mutex
+	var sent []byte
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/metrics" {
+			mu.Lock()
+			sent = append(sent, body...)
+			mu.Unlock()
+		}
+	}))
+	defer collector.Close()
+	provider := otel.GetMeterProvider()
+	t.Cleanup(func() { otel.SetMeterProvider(provider) })
+	env(t, "amqp://guest:guest@127.0.0.1:1/")
+	output(t, func() {})
+	mu.Lock()
+	assert.Empty(t, sent, "без OTEL_EXPORTER_OTLP_ENDPOINT метрики отправлены")
+	mu.Unlock()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.URL)
+	output(t, func() {})
+	mu.Lock()
+	assert.Contains(t, string(sent), "go.goroutine.count", "нет метрик runtime")
+	assert.Contains(t, string(sent), "process.cpu.time", "нет CPU процесса")
+	assert.Contains(t, string(sent), "pgxpool", "нет метрик пула")
+	mu.Unlock()
+	t.Setenv("OTEL_METRICS_EXPORTER", "nope")
+	_, err := app.Open(context.Background())
+	assert.ErrorContains(t, err, "OTEL_EXPORTER_OTLP_ENDPOINT")
 }

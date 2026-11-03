@@ -1,10 +1,11 @@
 // Package app собирает зависимости server и worker из переменных окружения
 // DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, RABBITMQ_URL,
-// LOG_LEVEL и OTEL_EXPORTER_OTLP_ENDPOINT, без неё трейсы и логи не уходят.
+// LOG_LEVEL и OTEL_EXPORTER_OTLP_ENDPOINT, без неё телеметрия не уходит.
 package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,11 +19,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/exporters/autoexport"
+	"go.opentelemetry.io/contrib/instrumentation/host"
+	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/contrib/processors/minsev"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/shigabutdinoff/gophprofile/internal/api"
@@ -42,6 +46,7 @@ type App struct {
 	files  *storage.Client
 	traces *sdktrace.TracerProvider
 	logs   *sdklog.LoggerProvider
+	meters *sdkmetric.MeterProvider
 }
 
 // Open проверяет переменные окружения, ставит логгер по умолчанию и
@@ -95,6 +100,10 @@ func Open(ctx context.Context) (*App, error) {
 	if err == nil {
 		logs, err = autoexport.NewLogExporter(ctx)
 	}
+	var reader sdkmetric.Reader
+	if err == nil {
+		reader, err = autoexport.NewMetricReader(ctx)
+	}
 	if err != nil {
 		a.Close()
 		return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT: %w", err)
@@ -105,7 +114,18 @@ func Open(ctx context.Context) (*App, error) {
 	otel.SetTracerProvider(a.traces)
 	a.logs = sdklog.NewLoggerProvider(sdklog.WithProcessor(minsev.NewLogProcessor(sdklog.NewBatchProcessor(logs), minsev.Severity(level))))
 	slog.SetDefault(slog.New(slog.NewMultiHandler(stdout, otelslog.NewHandler("gophprofile", otelslog.WithLoggerProvider(a.logs)))))
+	a.meters = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(a.meters)
+	if err := errors.Join(runtime.Start(), host.Start(), otelpgx.RecordStats(db)); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT: %w", err)
+	}
 	return a, nil
+}
+
+// MeterStorage отдаёт в метрики место, занятое аватарками пользователей.
+func (a *App) MeterStorage() error {
+	return postgres.New(a.db).ObserveStorage(otel.Meter("gophprofile"))
 }
 
 // Health отдаёт состояние Postgres, S3 и RabbitMQ.
@@ -113,8 +133,8 @@ func (a *App) Health() http.Handler {
 	return api.Health(map[string]func(context.Context) error{"postgres": a.db.Ping, "s3": a.files.Ping, "rabbitmq": a.Broker.Ping})
 }
 
-// Close закрывает подключения и отправляет оставшиеся трейсы и логи не
-// дольше 5 с.
+// Close закрывает подключения и отправляет оставшиеся трейсы, логи и
+// метрики не дольше 5 с.
 func (a *App) Close() {
 	_ = a.Broker.Close()
 	a.db.Close()
@@ -123,6 +143,7 @@ func (a *App) Close() {
 		defer cancel()
 		_ = a.traces.Shutdown(ctx)
 		_ = a.logs.Shutdown(ctx)
+		_ = a.meters.Shutdown(ctx)
 	}
 }
 
