@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"log/slog"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -107,7 +108,8 @@ func (s *Service) Fail(ctx context.Context, id string) error {
 }
 
 func (s *Service) rollback(ctx context.Context, a Avatar, cause error) error {
-	ctx = context.WithoutCancel(ctx)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
 	err := s.repo.Delete(ctx, a.ID)
 	if err == nil {
 		err = s.files.Delete(ctx, a.S3Key)

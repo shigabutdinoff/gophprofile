@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -272,7 +273,13 @@ func TestUploadStorageFailures(t *testing.T) {
 	repo.fail = errBroken
 	_, err = svc.Upload(context.Background(), "alice", "a", pngBytes(t, 1, 1))
 	assert.ErrorIs(t, err, errBroken, "ожидался сбой базы")
-	assert.Len(t, files.objects, 1, "файл удалён, хотя запись могла сохраниться")
+	assert.ErrorIs(t, err, avatar.ErrUnavailable, "сомнительная запись не откачена")
+	assert.Len(t, files.objects, 1, "файл сомнительной записи удалён")
+	files.objects = map[string][]byte{}
+	repo.fail = fmt.Errorf("%w: %w", avatar.ErrNotSaved, errBroken)
+	_, err = svc.Upload(context.Background(), "alice", "a", pngBytes(t, 1, 1))
+	assert.ErrorIs(t, err, errBroken, "ожидался сбой базы")
+	assert.Empty(t, files.objects, "файл без записи остался в хранилище")
 }
 
 func TestValidSize(t *testing.T) {

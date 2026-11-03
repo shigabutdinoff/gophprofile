@@ -1,0 +1,113 @@
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+
+tests:
+  - name: половина загрузок с ошибкой
+    interval: 1m
+    input_series:
+      - series: avatars_uploads_total{job="gophprofile-server", status="error"}
+        values: 0+10x20
+      - series: avatars_uploads_total{job="gophprofile-server", status="success"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HighErrorRate
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: Больше 10% загрузок аватарок завершаются ошибкой сервиса
+
+  - name: 5% ошибок и поток отклонённых
+    interval: 1m
+    input_series:
+      - series: avatars_uploads_total{job="gophprofile-server", status="error"}
+        values: 0+1x20
+      - series: avatars_uploads_total{job="gophprofile-server", status="success"}
+        values: 0+9x20
+      - series: avatars_uploads_total{job="gophprofile-server", status="rejected"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts: []
+
+  - name: загрузок нет
+    interval: 1m
+    input_series:
+      - series: avatars_uploads_total{job="gophprofile-server", status="error"}
+        values: 5x20
+      - series: avatars_uploads_total{job="gophprofile-server", status="success"}
+        values: 5x20
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="10"}
+        values: 5x20
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="+Inf"}
+        values: 5x20
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: HighResponseTime
+        exp_alerts: []
+
+  - name: загрузки дольше 5 с
+    interval: 1m
+    input_series:
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="5"}
+        values: 0x20
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="10"}
+        values: 0+10x20
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="+Inf"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighResponseTime
+        exp_alerts:
+          - exp_labels: {severity: critical, job: gophprofile-server, status: success}
+            exp_annotations:
+              summary: 95% загрузок со статусом success дольше 5 с
+
+  - name: быстрые загрузки
+    interval: 1m
+    input_series:
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="0.5"}
+        values: 0+10x20
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="5"}
+        values: 0+10x20
+      - series: avatars_upload_duration_seconds_bucket{job="gophprofile-server", status="success", le="+Inf"}
+        values: 0+10x20
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighResponseTime
+        exp_alerts: []
+
+  - name: worker не присылает метрики
+    interval: 1m
+    input_series:
+      - series: go_goroutine_count{job="gophprofile-server"}
+        values: 10x20
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: gophprofile-worker}
+            exp_annotations:
+              summary: gophprofile-worker не присылает метрики
+
+  - name: оба сервиса присылают метрики
+    interval: 1m
+    input_series:
+      - series: go_goroutine_count{job="gophprofile-server"}
+        values: 10x20
+      - series: go_goroutine_count{job="gophprofile-worker"}
+        values: 10x20
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ServiceDown
+        exp_alerts: []

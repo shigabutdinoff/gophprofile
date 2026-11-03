@@ -1,0 +1,24 @@
+groups:
+  - name: avatar-service
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(avatars_uploads_total{status="error"}[5m])) / sum(rate(avatars_uploads_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Больше 10% загрузок аватарок завершаются ошибкой сервиса
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(avatars_upload_duration_seconds_bucket[5m])) > 5
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 95% загрузок со статусом {{ $labels.status }} дольше 5 с
+      - alert: ServiceDown
+        expr: absent(go_goroutine_count{job="gophprofile-server"}) or absent(go_goroutine_count{job="gophprofile-worker"})
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} не присылает метрики"

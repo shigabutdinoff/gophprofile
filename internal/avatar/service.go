@@ -3,11 +3,14 @@ package avatar
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
 	"log/slog"
 	"os"
+	"time"
 	"uuid"
 
 	"go.opentelemetry.io/otel"
@@ -69,8 +72,8 @@ func New(repo Repository, files Storage, publisher Publisher) *Service {
 }
 
 // Upload проверяет и сохраняет файл data с именем name пользователя userID.
-// Если событие не отправлено, запись и файл удаляются, а ошибка содержит
-// ErrUnavailable. Сохранение видно в трейсах спаном upload_avatar.
+// Если запись могла сохраниться или событие не отправлено, запись и файл
+// удаляются, а ошибка содержит ErrUnavailable. Сохранение видно в трейсах спаном upload_avatar.
 func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) (Avatar, error) {
 	if !validUserID(userID) {
 		return Avatar{}, ErrUserID
@@ -96,6 +99,19 @@ func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) 
 		return Avatar{}, end(span, err)
 	}
 	if err = s.repo.Create(ctx, &a); err != nil {
+		if !errors.Is(err, ErrNotSaved) {
+			// INSERT может закоммититься уже после ошибки, поэтому файл
+			// остаётся: лишний файл лучше записи без файла.
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			if derr := s.repo.Delete(dctx, a.ID); derr != nil {
+				slog.ErrorContext(ctx, "сомнительная запись не удалена", "id", a.ID, "err", derr)
+			}
+			cancel()
+			return Avatar{}, end(span, fmt.Errorf("%w: %w", ErrUnavailable, err))
+		}
+		if derr := s.files.Delete(context.WithoutCancel(ctx), a.S3Key); derr != nil {
+			slog.ErrorContext(ctx, "файл без записи не удалён", "key", a.S3Key, "err", derr)
+		}
 		return Avatar{}, end(span, err)
 	}
 	if err = s.PublishUploadEvent(ctx, a.ID, a.UserID, a.S3Key); err != nil {

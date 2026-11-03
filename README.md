@@ -29,7 +29,7 @@ GET    /web/gallery/{user_id}                 # галерея пользова�
 Нужен Docker. Команды вызываются из корня репозитория.
 
 ```sh
-docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672, трейсы в Jaeger на http://127.0.0.1:16686, логи в OpenSearch Dashboards на http://127.0.0.1:5601, метрики в Prometheus на http://127.0.0.1:9090 и Grafana на http://127.0.0.1:3000
+docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672, трейсы в Jaeger на http://127.0.0.1:16686, логи в OpenSearch Dashboards на http://127.0.0.1:5601, метрики в Prometheus на http://127.0.0.1:9090 и Grafana на http://127.0.0.1:3000, алерты в Alertmanager на http://127.0.0.1:9093
 docker compose down            # остановка с сохранением данных
 docker compose down -v         # остановка с удалением данных
 ```
@@ -52,3 +52,25 @@ server и worker раз в 5 с отправляют метрики через c
 - Business KPI: загрузки по статусу, время загрузки, занятое аватарками место.
 
 Проверка: загрузить аватарку и через 15 с выполнить в Prometheus запросы `avatars_uploads_total{status="success"}` и `avatars_storage_bytes{user_id="<пользователь>"}`. Счётчик вырастет на 1, место на размер файла. Неверный формат увеличит `status="rejected"`, сбой хранилища или брокера `status="error"`.
+
+## Алерты
+
+Prometheus раз в минуту проверяет правила из `alerts.yml` и отправляет сработавшие алерты в Alertmanager. Тот пересылает их и их снятие в заглушку `alert-webhook`, которая печатает каждое уведомление в свой лог:
+
+- HighErrorRate (warning): больше 10% загрузок за 5 минут закончились ошибкой сервиса, держится 5 минут. Отклонённые файлы ошибкой не считаются.
+- HighResponseTime (critical): 95% загрузок за 5 минут дольше 5 с, держится 2 минуты.
+- ServiceDown (critical): server или worker не присылает метрики 1 минуту, имя сервиса в метке `job`.
+
+Алерты видны в Prometheus на вкладке Alerts, в Alertmanager и в логе заглушки: `docker compose logs -f alert-webhook`. CI проверяет правила командой `promtool test rules alerts.test.yml`.
+
+### Проверка алертов
+
+Сценарии со сбоем требуют потока загрузок. Его даёт цикл, который раз в 2 с загружает картинку `a.png`, его останавливает Ctrl+C:
+
+```sh
+while true; do curl -s -o /dev/null -w '%{http_code}\n' -H 'X-User-ID: alert-test' -F file=@a.png http://localhost:8080/api/v1/avatars; sleep 2; done
+```
+
+- Сбой базы: запустить цикл и `docker compose stop postgres`. Загрузки отвечают 500, примерно через 6 минут HighErrorRate переходит в firing, в логе заглушки появляется `"status": "firing"`. После `docker compose start postgres` алерт гаснет, когда ошибки выйдут из 5-минутного окна, это около 5 минут, и в логе появляется `"status": "resolved"`.
+- Остановка обработчика: `docker compose stop worker`, цикл не нужен. Примерно через 2 минуты ServiceDown с `job="gophprofile-worker"` переходит в firing. После `docker compose start worker` алерт гаснет меньше чем через минуту.
+- Медленное хранилище: запустить цикл и `docker compose pause minio`. Каждая загрузка ждёт ответа S3 30 с и заканчивается ошибкой. Примерно через 3–4 минуты HighResponseTime со `status="error"` переходит в firing, а через 6–7 минут и HighErrorRate. Квантиль показывает 10 с, верхнюю границу гистограммы. После `docker compose unpause minio` HighErrorRate гаснет примерно через 2 минуты, HighResponseTime примерно через 5.

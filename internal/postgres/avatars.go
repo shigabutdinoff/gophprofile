@@ -4,8 +4,11 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -26,11 +29,24 @@ func New(db *pgxpool.Pool) *Avatars {
 	return &Avatars{db: db}
 }
 
-// Create сохраняет a и заполняет её даты из записи.
+// Create сохраняет a и заполняет её даты из записи. Если запись точно не
+// сохранена, ошибка содержит avatar.ErrNotSaved.
 func (r *Avatars) Create(ctx context.Context, a *avatar.Avatar) error {
-	return r.db.QueryRow(ctx, `INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, width, height, s3_key,
+	conn, err := r.db.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: %w", avatar.ErrNotSaved, err)
+	}
+	defer conn.Release()
+	err = conn.QueryRow(ctx, `INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, width, height, s3_key,
 		upload_status, processing_status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'uploaded', $9) RETURNING created_at, updated_at`,
 		a.ID, a.UserID, a.FileName, a.MIMEType, a.Size, a.Dimensions.Width, a.Dimensions.Height, a.S3Key, string(a.Status)).Scan(&a.CreatedAt, &a.UpdatedAt)
+	// FATAL может прийти от пулера уже после коммита, а ERROR значит, что
+	// инструкция отклонена.
+	var pgErr *pgconn.PgError
+	if (errors.As(err, &pgErr) && pgErr.Severity == "ERROR") || pgconn.SafeToRetry(err) {
+		err = fmt.Errorf("%w: %w", avatar.ErrNotSaved, err)
+	}
+	return err
 }
 
 // GetAvatar возвращает неудалённую аватарку id или avatar.ErrNotFound.
@@ -86,21 +102,24 @@ func scan(row pgx.CollectableRow) (avatar.Avatar, error) {
 }
 
 // ObserveStorage отдаёт в meter место, занятое неудалёнными аватарками
-// каждого пользователя.
+// каждого пользователя. Запрос ждёт базу не дольше 2 с: пока база недоступна,
+// рядов места нет, а остальные метрики отправляются как обычно.
 func (r *Avatars) ObserveStorage(meter metric.Meter) error {
 	_, err := meter.Int64ObservableGauge("avatars.storage", metric.WithUnit("By"),
 		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
+			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
 			// Ряд на пользователя только у 1000 самых крупных, остальные
 			// суммируются в ряд без user_id, чтобы метрики влезали в запрос OTLP.
 			rows, _ := r.db.Query(ctx, `SELECT CASE WHEN n <= 1000 THEN user_id ELSE '' END, SUM(total) FROM (
 				SELECT user_id, SUM(size_bytes) AS total, row_number() OVER (ORDER BY SUM(size_bytes) DESC, user_id) AS n
 				FROM avatars WHERE deleted_at IS NULL GROUP BY user_id) t GROUP BY 1`)
 			user, size := "", int64(0)
-			_, err := pgx.ForEachRow(rows, []any{&user, &size}, func() error {
+			_, _ = pgx.ForEachRow(rows, []any{&user, &size}, func() error {
 				o.Observe(size, metric.WithAttributes(attribute.String("user_id", user)))
 				return nil
 			})
-			return err
+			return nil
 		}))
 	return err
 }

@@ -215,6 +215,20 @@ func (s *avatarsSuite) TestObserveStorage() {
 	s.Equal(map[string]int64{"bob": 7}, collect(), "ряд пользователя без аватарок остался")
 }
 
+func (s *avatarsSuite) TestCreateNotSaved() {
+	a := newAvatar("alice", "me.png")
+	s.Require().NoError(s.repo.Create(context.Background(), &a))
+	s.ErrorIs(s.repo.Create(context.Background(), &a), avatar.ErrNotSaved, "дубль не отмечен как несохранённый")
+	down, err := pgxpool.New(context.Background(), "postgres://u@127.0.0.1:1/db?connect_timeout=1")
+	s.Require().NoError(err)
+	defer down.Close()
+	b := newAvatar("alice", "b.png")
+	s.ErrorIs(postgres.New(down).Create(context.Background(), &b), avatar.ErrNotSaved, "недоступная база не отмечена")
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.ErrorIs(s.repo.Create(canceled, &b), avatar.ErrNotSaved, "отмена до запроса не отмечена")
+}
+
 func (s *avatarsSuite) TestObserveStorageTop() {
 	_, collect := s.storage()
 	_, err := s.db.Exec(context.Background(), `INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, width, height,
@@ -228,8 +242,7 @@ func (s *avatarsSuite) TestObserveStorageTop() {
 }
 
 func (s *avatarsSuite) TestObserveStorageClosedPool() {
-	reader, _ := s.storage()
+	_, collect := s.storage()
 	s.db.Close()
-	var rm metricdata.ResourceMetrics
-	s.Error(reader.Collect(context.Background(), &rm), "место из закрытой базы прочитано без ошибки")
+	s.Empty(collect(), "место прочитано из закрытой базы")
 }
