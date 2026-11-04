@@ -2,7 +2,9 @@ x-app: &app
   build: .
   image: gophprofile
   restart: unless-stopped
-  environment:
+  environment: &env
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    OTEL_METRIC_EXPORT_INTERVAL: "5000"
     DATABASE_URL: postgres://avatars:avatars@postgres:5432/avatars?sslmode=disable
     S3_ENDPOINT: http://minio:9000
     S3_ACCESS_KEY: minio
@@ -12,11 +14,13 @@ x-app: &app
     migrate: {condition: service_completed_successfully}
     bucket: {condition: service_completed_successfully}
     rabbitmq: {condition: service_healthy}
+    otel-collector: {condition: service_started}
 
 services:
   server:
     <<: *app
     command: ./server
+    environment: {<<: *env, OTEL_SERVICE_NAME: gophprofile-server}
     ports: ["8080:8080"]
     healthcheck:
       test: [CMD, wget, -qO-, http://localhost:8080/health]
@@ -25,6 +29,7 @@ services:
   worker:
     <<: *app
     command: ./worker
+    environment: {<<: *env, OTEL_SERVICE_NAME: gophprofile-worker}
     healthcheck:
       test: [CMD, pidof, worker]
       interval: 5s
@@ -71,7 +76,72 @@ services:
     depends_on:
       minio: {condition: service_healthy}
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    command: [--config=/etc/otel-collector.yaml]
+    volumes: [./otel-collector.yaml:/etc/otel-collector.yaml:ro]
+    depends_on: [jaeger, opensearch]
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    ports: ["127.0.0.1:16686:16686"]
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes: [opensearch:/usr/share/opensearch/data]
+    healthcheck:
+      test: [CMD, curl, -fs, "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=1s"]
+      interval: 5s
+      retries: 60
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:3.8.0
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    ports: ["127.0.0.1:5601:5601"]
+    depends_on:
+      opensearch: {condition: service_healthy}
+  opensearch-setup:
+    image: curlimages/curl:8.22.0
+    entrypoint: [sh, /opensearch-setup.sh]
+    volumes: [./opensearch-setup.sh:/opensearch-setup.sh:ro]
+    depends_on:
+      opensearch: {condition: service_healthy}
+      opensearch-dashboards: {condition: service_started}
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus:/prometheus
+    ports: ["127.0.0.1:9090:9090"]
+    depends_on: [otel-collector, rabbitmq, alertmanager]
+  alertmanager:
+    image: prom/alertmanager:v0.34.2
+    volumes: [./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro]
+    ports: ["127.0.0.1:9093:9093"]
+    depends_on: [alert-webhook]
+  alert-webhook:
+    image: mendhak/http-https-echo:43
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana:/var/lib/grafana
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [prometheus]
+
 volumes:
   postgres:
   rabbitmq:
   minio:
+  opensearch:
+  prometheus:
+  grafana:

@@ -13,6 +13,11 @@ import (
 
 	"github.com/avast/retry-go/v5"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 )
@@ -47,6 +52,16 @@ func Run(ctx context.Context, deliveries <-chan amqp.Delivery, svc Service, grac
 }
 
 func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limit time.Duration) {
+	carrier := propagation.MapCarrier{}
+	for k, v := range d.Headers {
+		if s, ok := v.(string); ok {
+			carrier[k] = s
+		}
+	}
+	work, span := otel.Tracer("gophprofile").Start(otel.GetTextMapPropagator().Extract(work, carrier), "avatars.upload process",
+		trace.WithSpanKind(trace.SpanKindConsumer), trace.WithAttributes(attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", "avatars.upload")))
+	defer span.End()
 	var kind struct {
 		S3Keys []string `json:"s3_keys"`
 	}
@@ -63,7 +78,7 @@ func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limi
 		err = retry.New(retry.Context(ctx), retry.Attempts(6), retry.Delay(pause), retry.MaxDelay(8*pause),
 			retry.DelayType(retry.BackOffDelay), retry.LastErrorOnly(true), retry.RetryIf(lost),
 			retry.OnRetry(func(n uint, err error) {
-				slog.Warn("событие не обработано, повтор", "id", id, "попытка", n+1, "err", err)
+				slog.WarnContext(work, "событие не обработано, повтор", "id", id, "попытка", n+1, "err", err)
 			}),
 		).Do(func() error {
 			attempt, cancel := context.WithTimeout(work, limit)
@@ -73,25 +88,26 @@ func handle(ctx, work context.Context, d amqp.Delivery, svc Service, pause, limi
 	}
 	switch {
 	case errors.Is(err, avatar.ErrDone):
-		slog.Info("повтор события", "id", id)
+		slog.InfoContext(work, "повтор события", "id", id)
 		err = d.Ack(false)
 	case err == nil:
 		err = d.Ack(false)
 	case ctx.Err() != nil && !errors.Is(err, avatar.ErrPermanent):
 		return
 	default:
-		slog.Error("событие ушло в очередь недоставленных", "id", id, "err", err)
+		slog.ErrorContext(work, "событие ушло в очередь недоставленных", "id", id, "err", err)
+		span.SetStatus(codes.Error, err.Error())
 		if upload && id != "" {
 			fctx, cancel := context.WithTimeout(work, limit)
 			defer cancel()
 			if ferr := svc.Fail(fctx, id); ferr != nil {
-				slog.Error("статус сбоя не записан", "id", id, "err", ferr)
+				slog.ErrorContext(fctx, "статус сбоя не записан", "id", id, "err", ferr)
 			}
 		}
 		err = d.Nack(false, false)
 	}
 	if err != nil {
-		slog.Error("ответ брокеру не отправлен", "id", id, "err", err)
+		slog.ErrorContext(work, "ответ брокеру не отправлен", "id", id, "err", err)
 	}
 }
 

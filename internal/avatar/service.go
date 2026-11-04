@@ -3,11 +3,19 @@ package avatar
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"log/slog"
+	"os"
+	"time"
 	"uuid"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/image/riff"
 	"golang.org/x/image/vp8"
 	"golang.org/x/image/vp8l"
@@ -64,8 +72,8 @@ func New(repo Repository, files Storage, publisher Publisher) *Service {
 }
 
 // Upload проверяет и сохраняет файл data с именем name пользователя userID.
-// Если событие не отправлено, запись и файл удаляются. Если брокер не принял
-// событие, ошибка содержит ErrUnavailable.
+// Если запись могла сохраниться или событие не отправлено, запись и файл
+// удаляются, а ошибка содержит ErrUnavailable. Сохранение видно в трейсах спаном upload_avatar.
 func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) (Avatar, error) {
 	if !validUserID(userID) {
 		return Avatar{}, ErrUserID
@@ -83,16 +91,33 @@ func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) 
 	id := uuid.New().String()
 	a := Avatar{ID: id, UserID: userID, FileName: cleanName(name), MIMEType: "image/" + format, Size: int64(len(data)),
 		Dimensions: Dimensions{cfg.Width, cfg.Height}, S3Key: "originals/" + id, Status: StatusProcessing}
+	ctx, span := otel.Tracer("gophprofile").Start(ctx, "upload_avatar", trace.WithAttributes(attribute.String("user_id", userID),
+		attribute.String("file_name", a.FileName), attribute.Int64("file_size", a.Size)))
+	logger := slog.With("service", os.Getenv("OTEL_SERVICE_NAME"), "trace_id", trace.SpanFromContext(ctx).SpanContext().TraceID())
+	logger.InfoContext(ctx, "uploading avatar", "user_id", userID, "file_size", a.Size, "mime_type", a.MIMEType)
 	if err := s.files.Upload(ctx, a.S3Key, data); err != nil {
-		return Avatar{}, err
+		return Avatar{}, end(span, err)
 	}
 	if err = s.repo.Create(ctx, &a); err != nil {
-		return Avatar{}, err
+		if !errors.Is(err, ErrNotSaved) {
+			// INSERT может закоммититься уже после ошибки, поэтому файл
+			// остаётся: лишний файл лучше записи без файла.
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			if derr := s.repo.Delete(dctx, a.ID); derr != nil {
+				slog.ErrorContext(ctx, "сомнительная запись не удалена", "id", a.ID, "err", derr)
+			}
+			cancel()
+			return Avatar{}, end(span, fmt.Errorf("%w: %w", ErrUnavailable, err))
+		}
+		if derr := s.files.Delete(context.WithoutCancel(ctx), a.S3Key); derr != nil {
+			slog.ErrorContext(ctx, "файл без записи не удалён", "key", a.S3Key, "err", derr)
+		}
+		return Avatar{}, end(span, err)
 	}
 	if err = s.PublishUploadEvent(ctx, a.ID, a.UserID, a.S3Key); err != nil {
-		return Avatar{}, s.rollback(ctx, a, err)
+		return Avatar{}, end(span, s.rollback(ctx, a, err))
 	}
-	return a, nil
+	return a, end(span, nil)
 }
 
 func sameFrame(data []byte, cfg image.Config) error {

@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 	"github.com/shigabutdinoff/gophprofile/internal/postgres"
@@ -174,4 +176,73 @@ func (s *avatarsSuite) TestMarkDeleted() {
 	s.ErrorIs(s.repo.MarkDeleted(ctx, a.ID), avatar.ErrNotFound, "повторная пометка прошла")
 	s.ErrorIs(s.repo.UpdateProcessingStatus(ctx, a.ID, avatar.StatusCompleted, nil), avatar.ErrDone)
 	s.ErrorIs(s.repo.MarkDeleted(ctx, "00000000-0000-0000-0000-000000000000"), avatar.ErrNotFound)
+}
+
+func (s *avatarsSuite) storage() (*sdkmetric.ManualReader, func() map[string]int64) {
+	reader := sdkmetric.NewManualReader()
+	s.Require().NoError(s.repo.ObserveStorage(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")))
+	return reader, func() map[string]int64 {
+		var rm metricdata.ResourceMetrics
+		s.Require().NoError(reader.Collect(context.Background(), &rm))
+		got := map[string]int64{}
+		for _, scope := range rm.ScopeMetrics {
+			for _, m := range scope.Metrics {
+				s.Equal("avatars.storage", m.Name)
+				s.Equal("By", m.Unit)
+				for _, p := range m.Data.(metricdata.Gauge[int64]).DataPoints {
+					user, _ := p.Attributes.Value("user_id")
+					got[user.AsString()] = p.Value
+				}
+			}
+		}
+		return got
+	}
+}
+
+func (s *avatarsSuite) TestObserveStorage() {
+	ctx := context.Background()
+	_, collect := s.storage()
+	s.Empty(collect(), "место без аватарок")
+	first, second, other := newAvatar("alice", "a.png"), newAvatar("alice", "b.png"), newAvatar("bob", "c.png")
+	first.Size, second.Size, other.Size = 100, 50, 7
+	for _, a := range []*avatar.Avatar{&first, &second, &other} {
+		s.Require().NoError(s.repo.Create(ctx, a), "запись не создана")
+	}
+	s.Equal(map[string]int64{"alice": 150, "bob": 7}, collect())
+	s.Require().NoError(s.repo.MarkDeleted(ctx, first.ID))
+	s.Equal(map[string]int64{"alice": 50, "bob": 7}, collect(), "удалённая аватарка учтена")
+	s.Require().NoError(s.repo.MarkDeleted(ctx, second.ID))
+	s.Equal(map[string]int64{"bob": 7}, collect(), "ряд пользователя без аватарок остался")
+}
+
+func (s *avatarsSuite) TestCreateNotSaved() {
+	a := newAvatar("alice", "me.png")
+	s.Require().NoError(s.repo.Create(context.Background(), &a))
+	s.ErrorIs(s.repo.Create(context.Background(), &a), avatar.ErrNotSaved, "дубль не отмечен как несохранённый")
+	down, err := pgxpool.New(context.Background(), "postgres://u@127.0.0.1:1/db?connect_timeout=1")
+	s.Require().NoError(err)
+	defer down.Close()
+	b := newAvatar("alice", "b.png")
+	s.ErrorIs(postgres.New(down).Create(context.Background(), &b), avatar.ErrNotSaved, "недоступная база не отмечена")
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	s.ErrorIs(s.repo.Create(canceled, &b), avatar.ErrNotSaved, "отмена до запроса не отмечена")
+}
+
+func (s *avatarsSuite) TestObserveStorageTop() {
+	_, collect := s.storage()
+	_, err := s.db.Exec(context.Background(), `INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, width, height,
+		s3_key, upload_status, processing_status) SELECT gen_random_uuid(), 'u' || i, 'a.png', 'image/png', i, 1, 1, 'k' || i,
+		'uploaded', 'processing' FROM generate_series(1, 1002) i`)
+	s.Require().NoError(err)
+	got := collect()
+	s.Len(got, 1001, "ряды сверх 1000 не свёрнуты")
+	s.Equal(int64(3), got[""], "свёрнуты не самые мелкие")
+	s.Equal(int64(1002), got["u1002"])
+}
+
+func (s *avatarsSuite) TestObserveStorageClosedPool() {
+	_, collect := s.storage()
+	s.db.Close()
+	s.Empty(collect(), "место прочитано из закрытой базы")
 }

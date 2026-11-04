@@ -4,6 +4,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,6 +12,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httprate"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 	"github.com/shigabutdinoff/gophprofile/web"
@@ -27,13 +32,17 @@ type handler struct {
 // С одного IP принимается не больше 100 запросов в минуту.
 func New(svc *avatar.Service, health http.Handler) http.Handler {
 	h := handler{svc: svc}
+	upload := counted(h.upload)
 	r := chi.NewRouter()
+	// Постоянное имя сервера держит Host клиента вне меток метрик.
+	r.Use(otelhttp.NewMiddleware("http", otelhttp.WithServerName("gophprofile:8080"),
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/health" })))
 	r.Method(http.MethodGet, "/health", health)
 	r.Get("/", spa)
 	r.Get("/web/upload", spa)
-	r.Post("/web/upload", h.upload)
+	r.Post("/web/upload", upload)
 	r.Get("/web/gallery/*", spa)
-	r.Post("/api/v1/avatars", h.upload)
+	r.Post("/api/v1/avatars", upload)
 	r.Get("/api/v1/avatars/{id}", h.file)
 	r.Get("/api/v1/avatars/{id}/metadata", h.metadata)
 	r.Get("/api/v1/users/{user_id}/avatars", h.list)
@@ -44,6 +53,41 @@ func New(svc *avatar.Service, health http.Handler) http.Handler {
 		return httprate.CanonicalizeIP(middleware.GetClientIP(r.Context())), nil
 	})
 	return middleware.ClientIPFromRemoteAddr(limit(http.MaxBytesHandler(r, avatar.MaxSize+(1<<20))))
+}
+
+func counted(next http.HandlerFunc) http.HandlerFunc {
+	meter := otel.Meter("gophprofile")
+	total, _ := meter.Int64Counter("avatars.uploads")
+	took, _ := meter.Float64Histogram("avatars.upload.duration", metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10))
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Время считается от последнего принятого байта тела, чтобы
+		// медленный канал клиента не попадал во время ответа.
+		start := time.Now()
+		r.Body = lastRead{r.Body, &start}
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next(ww, r)
+		status := "success"
+		if ww.Status() >= http.StatusInternalServerError {
+			status = "error"
+		} else if ww.Status() >= http.StatusBadRequest {
+			status = "rejected"
+		}
+		set := metric.WithAttributes(attribute.String("status", status))
+		total.Add(r.Context(), 1, set)
+		took.Record(r.Context(), time.Since(start).Seconds(), set)
+	}
+}
+
+type lastRead struct {
+	io.ReadCloser
+	at *time.Time
+}
+
+func (b lastRead) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	*b.at = time.Now()
+	return n, err
 }
 
 func spa(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(web.Index) }
@@ -64,6 +108,8 @@ func respond(w http.ResponseWriter, r *http.Request, body any, err error) {
 
 func fail(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case r.Context().Err() != nil:
+		w.WriteHeader(499) // клиент ушёл, это не сбой сервиса
 	case errors.Is(err, avatar.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Avatar not found"})
 	case errors.Is(err, avatar.ErrForbidden):

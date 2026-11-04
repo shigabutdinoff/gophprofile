@@ -2,20 +2,32 @@ package app_test
 
 import (
 	"context"
+	"io"
+	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcrabbit "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
+	"go.opentelemetry.io/otel"
 
 	"github.com/shigabutdinoff/gophprofile/internal/app"
 )
 
 func env(t *testing.T, rabbit string) {
 	t.Helper()
+	logger := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(logger)
+		slog.SetLogLoggerLevel(slog.LevelInfo)
+	})
 	for key, value := range map[string]string{
 		"DATABASE_URL":  "postgres://postgres:секрет-базы@127.0.0.1:1/postgres",
 		"S3_ENDPOINT":   "http://127.0.0.1:1",
@@ -32,6 +44,13 @@ func TestOpenErrors(t *testing.T) {
 	a, err := app.Open(context.Background())
 	require.NoError(t, err, "без брокера сервер не стартует")
 	a.Close()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	a, err = app.Open(context.Background())
+	require.NoError(t, err, "недоступный collector мешает запуску")
+	started := time.Now()
+	a.Close()
+	assert.Less(t, time.Since(started), 6*time.Second, "трейсы отправляются дольше таймаута")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	for _, endpoint := range []string{"minio:9000", "http://", "::"} {
 		t.Setenv("S3_ENDPOINT", endpoint)
 		_, err = app.Open(context.Background())
@@ -68,4 +87,100 @@ func TestOpenHealth(t *testing.T) {
 	a.Health().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "Postgres и S3 недоступны")
 	assert.Contains(t, rec.Body.String(), `"rabbitmq":{"status":"up"`)
+}
+
+func output(t *testing.T, write func()) string {
+	t.Helper()
+	stdout := os.Stdout
+	t.Cleanup(func() { os.Stdout = stdout })
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	a, err := app.Open(context.Background())
+	require.NoError(t, err)
+	write()
+	a.Close()
+	require.NoError(t, w.Close())
+	data, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(data)
+}
+
+func records() {
+	slog.Info("инфо")
+	slog.Warn("предупреждение")
+	log.Print("журнал")
+}
+
+func TestOpenLogs(t *testing.T) {
+	var mu sync.Mutex
+	var sent []byte
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/logs" {
+			mu.Lock()
+			sent = append(sent, body...)
+			mu.Unlock()
+		}
+	}))
+	defer collector.Close()
+	env(t, "amqp://guest:guest@127.0.0.1:1/")
+	t.Setenv("LOG_LEVEL", "warn")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", collector.URL+"/v1/logs")
+	out := output(t, records)
+	assert.NotContains(t, out, "инфо", "запись ниже порога")
+	assert.Contains(t, out, `"level":"WARN","msg":"предупреждение"`)
+	assert.Contains(t, out, `"level":"ERROR","msg":"журнал"`, "пакет log пишет уровнем ERROR")
+	mu.Lock()
+	assert.Empty(t, sent, "без OTEL_EXPORTER_OTLP_ENDPOINT мост отправляет записи")
+	mu.Unlock()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.URL)
+	out = output(t, records)
+	assert.Contains(t, out, "предупреждение", "запись не ушла в stdout")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Contains(t, string(sent), "предупреждение", "мост не отправил запись")
+	assert.NotContains(t, string(sent), "инфо", "мост отправил запись ниже порога")
+}
+
+func TestOpenLogLevel(t *testing.T) {
+	env(t, "amqp://guest:guest@127.0.0.1:1/")
+	t.Setenv("LOG_LEVEL", "DEBUG")
+	assert.Contains(t, output(t, func() { slog.Debug("отладка") }), `"level":"DEBUG"`)
+	t.Setenv("LOG_LEVEL", "")
+	assert.NotContains(t, output(t, func() { slog.Debug("отладка") }), "отладка", "порог по умолчанию ниже info")
+	t.Setenv("LOG_LEVEL", "warning")
+	_, err := app.Open(context.Background())
+	assert.ErrorContains(t, err, "LOG_LEVEL")
+}
+
+func TestOpenMetrics(t *testing.T) {
+	var mu sync.Mutex
+	var sent []byte
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/metrics" {
+			mu.Lock()
+			sent = append(sent, body...)
+			mu.Unlock()
+		}
+	}))
+	defer collector.Close()
+	provider := otel.GetMeterProvider()
+	t.Cleanup(func() { otel.SetMeterProvider(provider) })
+	env(t, "amqp://guest:guest@127.0.0.1:1/")
+	output(t, func() {})
+	mu.Lock()
+	assert.Empty(t, sent, "без OTEL_EXPORTER_OTLP_ENDPOINT метрики отправлены")
+	mu.Unlock()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.URL)
+	output(t, func() {})
+	mu.Lock()
+	assert.Contains(t, string(sent), "go.goroutine.count", "нет метрик runtime")
+	assert.Contains(t, string(sent), "process.cpu.time", "нет CPU процесса")
+	assert.Contains(t, string(sent), "pgxpool", "нет метрик пула")
+	mu.Unlock()
+	t.Setenv("OTEL_METRICS_EXPORTER", "nope")
+	_, err := app.Open(context.Background())
+	assert.ErrorContains(t, err, "OTEL_EXPORTER_OTLP_ENDPOINT")
 }

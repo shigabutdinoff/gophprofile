@@ -41,6 +41,9 @@ func run(ctx context.Context) error {
 		return err
 	}
 	defer a.Close()
+	if err := a.MeterStorage(); err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Handler:           api.New(a.Service, a.Health()),
 		ReadHeaderTimeout: 10 * time.Second,
