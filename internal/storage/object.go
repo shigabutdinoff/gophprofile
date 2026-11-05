@@ -10,8 +10,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// Upload кладёт data объектом key.
+// Upload кладёт data объектом key не дольше 30 с.
 func (c *Client) Upload(ctx context.Context, key string, data []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, c.upload)
+	defer cancel()
 	_, err := c.s3.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(c.bucket), Key: aws.String(key),
 		Body: bytes.NewReader(data)})
 	return err
