@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: avatar-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+data:
+  max_file_size: {{ .Values.config.max_file_size | int64 | quote }}
+  allowed_mime_types: {{ .Values.config.allowed_mime_types | quote }}
+  s3_bucket: {{ .Values.config.s3_bucket | quote }}
+  s3_endpoint: "http://minio.{{ .Values.databaseNamespace }}.svc:9000"
+  log_level: {{ .Values.config.log_level | quote }}
+  trusted_proxies: {{ .Values.config.trusted_proxies | quote }}
+  otel_endpoint: "http://avatar-collector:4318"

@@ -17,12 +17,13 @@ const region = "us-east-1"
 
 // Client работает с объектами файлов в хранилище.
 type Client struct {
-	s3 *s3.Client
+	s3     *s3.Client
+	bucket string
 }
 
-// New собирает клиент хранилища по адресу endpoint. Запросы идут через
-// client и подписываются ключом доступа key и секретом secret.
-func New(client *http.Client, endpoint, key, secret string) *Client {
+// New собирает клиент бакета bucket хранилища по адресу endpoint. Запросы
+// идут через client и подписываются ключом доступа key и секретом secret.
+func New(client *http.Client, endpoint, key, secret, bucket string) *Client {
 	traced := *client
 	traced.Transport = otelhttp.NewTransport(client.Transport,
 		otelhttp.WithFilter(func(r *http.Request) bool { return middleware.GetOperationName(r.Context()) != "HeadBucket" }),
@@ -31,5 +32,5 @@ func New(client *http.Client, endpoint, key, secret string) *Client {
 		BaseEndpoint: aws.String(strings.TrimSuffix(endpoint, "/")), UsePathStyle: true, Region: region,
 		HTTPClient: &traced, Retryer: aws.NopRetryer{},
 		Credentials: credentials.NewStaticCredentialsProvider(key, secret, ""),
-	})}
+	}), bucket}
 }

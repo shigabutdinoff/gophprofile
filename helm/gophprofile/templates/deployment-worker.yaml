@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: avatar-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+    app: avatar-worker
+spec:
+  replicas: {{ .Values.workerReplicas }}
+  selector:
+    matchLabels:
+      app: avatar-worker
+  template:
+    metadata:
+      labels:
+        app: avatar-worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: avatar-service
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "gophprofile.podSecurity" 65534 | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "gophprofile.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["./worker"]
+          securityContext:
+            {{- include "gophprofile.containerSecurity" . | nindent 12 }}
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: gophprofile-worker
+            {{- include "gophprofile.env" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

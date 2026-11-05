@@ -33,7 +33,7 @@ func startS3(t *testing.T, reply http.HandlerFunc) *fakeS3 {
 	t.Cleanup(f.Close)
 	web := f.Client()
 	web.Timeout = 300 * time.Millisecond
-	f.client = New(web, f.URL+"/", "minio", "секрет")
+	f.client = New(web, f.URL+"/", "minio", "секрет", "avatars")
 	return f
 }
 
@@ -94,4 +94,12 @@ func TestDeleteAndPing(t *testing.T) {
 	assert.Equal(t, []string{http.MethodHead, "/avatars"}, []string{method, target})
 	status = http.StatusInternalServerError
 	assert.Error(t, f.client.Ping(t.Context()), "сбой хранилища не замечен")
+}
+
+func TestBucket(t *testing.T) {
+	var target string
+	f := startS3(t, func(_ http.ResponseWriter, r *http.Request) { target = r.URL.Path })
+	f.client = New(f.Client(), f.URL, "minio", "секрет", "other")
+	require.NoError(t, f.client.Upload(t.Context(), key, []byte("картинка")))
+	assert.Equal(t, "/other/"+key, target, "объект записан не в заданный бакет")
 }

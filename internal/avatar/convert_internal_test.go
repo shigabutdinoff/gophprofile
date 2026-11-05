@@ -8,7 +8,7 @@ import (
 )
 
 func TestConvertBusySlot(t *testing.T) {
-	s := New(nil, nil, nil)
+	s := New(nil, nil, nil, MaxSize, nil)
 	s.slot <- struct{}{}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

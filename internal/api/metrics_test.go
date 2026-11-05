@@ -92,7 +92,7 @@ func TestUploadMetrics(t *testing.T) {
 func TestUploadMetricsStorageError(t *testing.T) {
 	reader := meter(t)
 	m := &memory{objects: map[string][]byte{}, gone: map[string]bool{}}
-	srv := httptest.NewServer(api.New(avatar.New(m, broken{files{m}}, m), http.NotFoundHandler()))
+	srv := httptest.NewServer(api.New(avatar.New(m, broken{files{m}}, m, avatar.MaxSize, []string{"image/jpeg", "image/png", "image/webp"}), http.NotFoundHandler(), avatar.MaxSize, 0))
 	t.Cleanup(srv.Close)
 	req := resty.New().R().SetHeader("X-User-ID", "alice").SetFileReader("image", "me.png", bytes.NewReader(pngBytes(t, 4, 4, 0)))
 	resp, _ := send(t, req, http.MethodPost, srv.URL+"/web/upload")
@@ -105,7 +105,7 @@ func TestUploadMetricsStorageError(t *testing.T) {
 func TestUploadMetricsClientGone(t *testing.T) {
 	reader := meter(t)
 	m := &memory{objects: map[string][]byte{}, gone: map[string]bool{}}
-	h := api.New(avatar.New(m, broken{files{m}}, m), http.NotFoundHandler())
+	h := api.New(avatar.New(m, broken{files{m}}, m, avatar.MaxSize, []string{"image/jpeg", "image/png", "image/webp"}), http.NotFoundHandler(), avatar.MaxSize, 0)
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	part, _ := form.CreateFormFile("file", "me.png")

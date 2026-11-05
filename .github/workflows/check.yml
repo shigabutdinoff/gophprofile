@@ -58,6 +58,25 @@ jobs:
           promtool check config prometheus.yml
           promtool test rules alerts.test.yml
 
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.22.1
+      - run: |
+          chart=helm/gophprofile
+          secrets=secrets.postgresPassword=ci,secrets.minioPassword=ci,secrets.rabbitmqPassword=ci
+          helm lint "$chart" -f "$chart/values-dev.yaml"
+          helm lint "$chart" -f "$chart/values-prod.yaml" --set "$secrets"
+          helm template gophprofile "$chart" -f "$chart/values-dev.yaml" > /dev/null
+          helm template gophprofile "$chart" -f "$chart/values-prod.yaml" --set "$secrets" > /dev/null
+          if helm template gophprofile "$chart" -f "$chart/values-prod.yaml" > /dev/null 2>&1; then
+            echo "values-prod.yaml без паролей собирается" >&2
+            exit 1
+          fi
+
   files:
     runs-on: ubuntu-latest
     steps:

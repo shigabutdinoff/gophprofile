@@ -109,6 +109,7 @@ type fakeFiles struct {
 	objects  map[string][]byte
 	fail     error
 	onUpload func(key string)
+	read     int64
 }
 
 func (f *fakeFiles) Upload(_ context.Context, key string, data []byte) error {
@@ -122,7 +123,8 @@ func (f *fakeFiles) Upload(_ context.Context, key string, data []byte) error {
 	return nil
 }
 
-func (f *fakeFiles) Download(_ context.Context, key string, _ int64) ([]byte, error) {
+func (f *fakeFiles) Download(_ context.Context, key string, limit int64) ([]byte, error) {
+	f.read = limit
 	if f.fail != nil {
 		return nil, f.fail
 	}
@@ -164,7 +166,7 @@ func withPublisher() (*avatar.Service, *fakeRepo, *fakeFiles, *fakePub) {
 	repo := &fakeRepo{}
 	files := &fakeFiles{objects: map[string][]byte{}}
 	pub := &fakePub{}
-	return avatar.New(repo, files, pub), repo, files, pub
+	return avatar.New(repo, files, pub, avatar.MaxSize, []string{"image/jpeg", "image/png", "image/webp"}), repo, files, pub
 }
 
 func pngBytes(t *testing.T, w, h int) []byte {
@@ -286,4 +288,20 @@ func TestValidSize(t *testing.T) {
 	for size, want := range map[string]bool{"original": true, "100x100": true, "300x300": true, "50x50": false, "": false} {
 		assert.Equal(t, want, avatar.ValidSize(size), "размер %q", size)
 	}
+}
+
+func TestUploadConfiguredLimits(t *testing.T) {
+	repo, files := &fakeRepo{}, &fakeFiles{objects: map[string][]byte{}}
+	svc := avatar.New(repo, files, &fakePub{}, 1<<20, []string{"image/png"})
+	_, err := svc.Upload(context.Background(), "alice", "big.png", append(pngBytes(t, 1, 1), make([]byte, 1<<20)...))
+	assert.ErrorIs(t, err, avatar.ErrTooLarge, "файл больше лимита принят")
+	var jpg bytes.Buffer
+	require.NoError(t, jpeg.Encode(&jpg, image.NewGray(image.Rect(0, 0, 2, 2)), nil))
+	_, err = svc.Upload(context.Background(), "alice", "me.jpg", jpg.Bytes())
+	assert.ErrorIs(t, err, avatar.ErrInvalidFormat, "неразрешённый jpeg принят")
+	a, err := svc.Upload(context.Background(), "alice", "me.png", pngBytes(t, 2, 2))
+	require.NoError(t, err, "разрешённый png не принят")
+	_, _, err = svc.Read(context.Background(), a, avatar.Original)
+	require.NoError(t, err)
+	assert.Equal(t, int64(avatar.MaxSize), files.read, "чтение ограничено пределом загрузки, а не MaxSize")
 }

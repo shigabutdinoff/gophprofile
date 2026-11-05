@@ -1,0 +1,72 @@
+# Образ сервиса собирается в dockerd кластера, registry не нужен.
+image:
+  repository: avatar-service
+  tag: latest
+  pullPolicy: IfNotPresent
+
+namespace: avatars
+databaseNamespace: database
+ingressNamespace: kube-system
+monitoringNamespace: monitoring
+
+replicaCount: 3
+workerReplicas: 1
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  cpu: 70
+  memory: 80
+
+ingress:
+  host: avatars.example.com
+
+config:
+  max_file_size: "10485760"
+  allowed_mime_types: "image/jpeg,image/png,image/webp"
+  s3_bucket: "avatars"
+  log_level: "info"
+  trusted_proxies: "1"
+
+# Пароли обязательны, без них установка останавливается.
+secrets:
+  postgresPassword: ""
+  minioPassword: ""
+  rabbitmqPassword: ""
+
+postgres:
+  image: postgres:18.6-alpine
+  user: avatars
+  database: avatars
+  storage: 1Gi
+
+minio:
+  image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+  user: minio
+  storage: 1Gi
+
+rabbitmq:
+  image: rabbitmq:4.4.0-management-alpine
+  user: avatars
+  storage: 1Gi
+
+migrate:
+  image: migrate/migrate:v4.20.1
+
+collector:
+  image: otel/opentelemetry-collector-contrib:0.164.0
+
+serviceMonitor:
+  release: monitoring
+  interval: 30s
+
+terminationGracePeriodSeconds: 30

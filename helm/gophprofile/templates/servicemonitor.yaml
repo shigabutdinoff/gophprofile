@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: avatar-service
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+    release: {{ .Values.serviceMonitor.release }}
+spec:
+  selector:
+    matchLabels:
+      app: avatar-collector
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      honorLabels: true

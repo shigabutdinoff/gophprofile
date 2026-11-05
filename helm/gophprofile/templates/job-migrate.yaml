@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: avatar-migrate
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: avatar-migrate
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "gophprofile.podSecurity" 65534 | nindent 8 }}
+      initContainers:
+        - name: sql
+          image: {{ include "gophprofile.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "until nc -z postgres.{{ .Values.databaseNamespace }}.svc 5432; do sleep 2; done; cp /app/migrations/* /migrations/"]
+          securityContext:
+            {{- include "gophprofile.containerSecurity" . | nindent 12 }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+      containers:
+        - name: migrate
+          image: {{ .Values.migrate.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["-path", "/migrations", "-database", "$(DATABASE_URL)", "up"]
+          securityContext:
+            {{- include "gophprofile.containerSecurity" . | nindent 12 }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: avatar-secrets
+                  key: database-url
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+      volumes:
+        - name: migrations
+          emptyDir: {}

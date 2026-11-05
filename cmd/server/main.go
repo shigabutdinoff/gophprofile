@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shigabutdinoff/gophprofile/internal/api"
 	"github.com/shigabutdinoff/gophprofile/internal/app"
 )
 
@@ -45,7 +44,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	srv := &http.Server{
-		Handler:           api.New(a.Service, a.Health()),
+		Handler:           a.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       10 * time.Minute,
 		WriteTimeout:      10 * time.Minute,

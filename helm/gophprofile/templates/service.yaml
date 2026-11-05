@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: avatar-service
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "gophprofile.labels" . | nindent 4 }}
+    app: avatar-service
+spec:
+  selector:
+    app: avatar-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+  type: ClusterIP
