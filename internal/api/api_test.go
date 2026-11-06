@@ -130,6 +130,8 @@ func send(t *testing.T, req *resty.Request, method, url string) (*resty.Response
 	t.Helper()
 	resp, err := req.Execute(method, url)
 	require.NoError(t, err, "сервер не ответил")
+	err = checkResponse(resp.Request.RawRequest, resp.StatusCode(), resp.Header(), resp.Body())
+	require.NoError(t, err, "ответ %s %s не по описанию", method, url)
 	return resp, resp.Body()
 }
 

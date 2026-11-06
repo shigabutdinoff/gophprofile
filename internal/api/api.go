@@ -1,4 +1,3 @@
-// Package api переводит запросы REST API аватарок в сценарии пакета avatar.
 package api
 
 import (
@@ -38,19 +37,7 @@ func New(svc *avatar.Service, health http.Handler, size, proxies int) http.Handl
 	// Постоянное имя сервера держит Host клиента вне меток метрик.
 	r.Use(otelhttp.NewMiddleware("http", otelhttp.WithServerName("gophprofile:8080"),
 		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/health" && r.URL.Path != "/live" })))
-	r.Method(http.MethodGet, "/health", health)
-	r.Get("/live", func(http.ResponseWriter, *http.Request) {})
-	r.Get("/", spa)
-	r.Get("/web/upload", spa)
-	r.Post("/web/upload", upload)
-	r.Get("/web/gallery/*", spa)
-	r.Post("/api/v1/avatars", upload)
-	r.Get("/api/v1/avatars/{id}", h.file)
-	r.Get("/api/v1/avatars/{id}/metadata", h.metadata)
-	r.Get("/api/v1/users/{user_id}/avatars", h.list)
-	r.Get("/api/v1/users/{user_id}/avatar", h.file)
-	r.Delete("/api/v1/avatars/{id}", h.remove)
-	r.Delete("/api/v1/users/{user_id}/avatar", h.remove)
+	h.routes(r, upload, health)
 	limit := httprate.LimitBy(100, time.Minute, func(r *http.Request) (string, error) {
 		return httprate.CanonicalizeIP(middleware.GetClientIP(r.Context())), nil
 	})

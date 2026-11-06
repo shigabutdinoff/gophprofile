@@ -24,6 +24,10 @@ GET    /web/gallery/{user_id}                 # галерея пользова�
 Пользователь передаётся в заголовке `X-User-ID`. Форматы jpeg, png и webp,
 файл до 10 МБ, с одного IP не больше 100 запросов в минуту.
 
+Спецификация API в формате Swagger 2.0 лежит в `api/swagger.yaml` и
+`api/swagger.json`. Её строит swag из аннотаций в `internal/api/routes.go`
+командой `go generate ./internal/api`.
+
 ## Запуск
 
 ### Docker Compose
@@ -55,6 +59,43 @@ helm uninstall gophprofile -n default --wait
 
 С `values-prod.yaml` пароли передаются флагами `--set secrets.postgresPassword=…`,
 `--set secrets.minioPassword=…` и `--set secrets.rabbitmqPassword=…`.
+
+## Архитектура
+
+```mermaid
+flowchart TB
+  client([Клиент]) -->|HTTP| ingctl
+  subgraph kube-system
+    ingctl[Ingress controller]
+  end
+  subgraph avatars["namespace avatars"]
+    ing[Ingress avatar-ingress] --> svc[Service avatar-service]
+    svc --> server["Deployment avatar-service (server)<br/>пробы /live и /health"]
+    hpa[HPA avatar-service-hpa] -.-> server
+    worker[Deployment avatar-worker]
+    job["Job avatar-migrate<br/>хук Helm post-install, pre-upgrade"]
+    collector[Deployment avatar-collector<br/>Service avatar-collector]
+    cm[ConfigMap avatar-config] -.-> server & worker
+    sec[Secret avatar-secrets] -.-> server & worker & job
+    sa[ServiceAccount avatar-service] -.-> server & worker
+    sm[ServiceMonitor avatar-service]
+    server & worker --> collector
+  end
+  ingctl --> ing
+  subgraph database["namespace database"]
+    pg[(StatefulSet postgres)]
+    minio[(StatefulSet minio)]
+    rabbit[(StatefulSet rabbitmq)]
+  end
+  server --> pg & minio & rabbit
+  worker --> pg & minio & rabbit
+  job --> pg
+  subgraph monitoring["namespace monitoring"]
+    prom[Prometheus kube-prometheus-stack]
+  end
+  sm -.-> collector
+  prom --> collector
+```
 
 ## Логи
 
