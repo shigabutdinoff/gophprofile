@@ -1,0 +1,11 @@
+ingress:
+  host: avatars.localhost
+
+replicaCount: 2
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 5
+
+config:
+  log_level: "debug"

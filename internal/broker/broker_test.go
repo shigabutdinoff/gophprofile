@@ -3,12 +3,15 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 	"uuid"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/sony/gobreaker/v2"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
 	tcrabbit "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
@@ -108,6 +111,15 @@ func (s *brokerSuite) TestUnreachable() {
 	s.Error(b.Publish(context.Background(), "avatars.exchange", "avatar.uploaded", avatar.AvatarUploadEvent{AvatarID: "a4"}))
 }
 
+func (s *brokerSuite) TestBreakerSkipsCancel() {
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 7 {
+		s.Require().ErrorIs(s.b.Publish(gone, exchange, key, avatar.AvatarUploadEvent{}), context.Canceled)
+	}
+	s.Require().NoError(s.b.Publish(context.Background(), exchange, key, avatar.AvatarUploadEvent{}), "отмена вызывающим открыла автомат")
+}
+
 func (s *brokerSuite) TestReconnect() {
 	s.Require().NoError(s.b.conn.Close(), "соединение не разорвано")
 	s.Require().NoError(s.b.Publish(context.Background(), "avatars.exchange", "avatar.uploaded", avatar.AvatarUploadEvent{AvatarID: "a5"}), "брокер не переподключился")
@@ -152,8 +164,13 @@ func TestHungBroker(t *testing.T) {
 	first := make(chan error)
 	go func() { first <- b.Ping(context.Background()) }()
 	time.Sleep(100 * time.Millisecond)
-	if err := b.Publish(context.Background(), exchange, key, avatar.AvatarUploadEvent{}); err != errDialing {
-		t.Errorf("второй вызов: %v, ждали errDialing", err)
+	for range 7 {
+		if err := b.Publish(context.Background(), exchange, key, avatar.AvatarUploadEvent{}); err != errDialing {
+			t.Errorf("второй вызов: %v, ждали errDialing", err)
+		}
+	}
+	if b.cb.Counts().ConsecutiveFailures != 0 {
+		t.Error("занятое подключение засчитано автоматом как сбой")
 	}
 	if time.Since(start) > time.Second {
 		t.Error("второй вызов ждал подключения первого")
@@ -162,4 +179,57 @@ func TestHungBroker(t *testing.T) {
 		t.Errorf("первый вызов: %v за %v", err, time.Since(start))
 	}
 	_ = b.Close()
+}
+
+func TestBreakerOpens(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			_ = c.Close()
+		}
+	}()
+	b, err := Open("amqp://guest:guest@" + l.Addr().String() + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = b.Close() }()
+	for i := range 6 {
+		if err := b.Publish(context.Background(), exchange, key, avatar.AvatarUploadEvent{}); err == nil || errors.Is(err, gobreaker.ErrOpenState) {
+			t.Fatalf("публикация %d: %v, ждали сбой подключения", i+1, err)
+		}
+	}
+	seen := accepted.Load()
+	start := time.Now()
+	if err := b.Publish(context.Background(), exchange, key, avatar.AvatarUploadEvent{}); !errors.Is(err, gobreaker.ErrOpenState) {
+		t.Errorf("после 6 сбоев: %v, ждали открытый автомат", err)
+	}
+	if time.Since(start) > 100*time.Millisecond || accepted.Load() != seen {
+		t.Error("открытый автомат подключался к брокеру")
+	}
+}
+
+func TestBreakerSkipsEncoding(t *testing.T) {
+	b, err := Open("amqp://guest:guest@127.0.0.1:1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 7 {
+		err := b.Publish(context.Background(), exchange, key, make(chan int))
+		if _, ok := errors.AsType[*json.UnsupportedTypeError](err); !ok {
+			t.Fatalf("событие без JSON: %v, ждали ошибку сериализации", err)
+		}
+	}
+	if b.cb.Counts().ConsecutiveFailures != 0 {
+		t.Error("ошибка сериализации засчитана автоматом как сбой")
+	}
 }

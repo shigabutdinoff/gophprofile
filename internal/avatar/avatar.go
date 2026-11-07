@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// MaxSize это предел размера файла аватарки в байтах.
+// MaxSize это наибольший размер файла аватарки в байтах.
 const MaxSize = 10 << 20
 
 // Original это размер оригинала аватарки.
@@ -30,9 +30,9 @@ const (
 var (
 	// ErrNotFound сообщает, что аватарки нет.
 	ErrNotFound = errors.New("аватарка не найдена")
-	// ErrInvalidFormat сообщает, что файл не JPEG, PNG или WebP.
+	// ErrInvalidFormat сообщает, что тип файла не разрешён при загрузке.
 	ErrInvalidFormat = errors.New("формат файла не поддерживается")
-	// ErrTooLarge сообщает, что файл больше MaxSize.
+	// ErrTooLarge сообщает, что файл больше предела загрузки.
 	ErrTooLarge = errors.New("файл больше допустимого размера")
 	// ErrUserID сообщает, что идентификатор пользователя пуст, не в UTF8,
 	// содержит NUL или длиннее 255 символов.

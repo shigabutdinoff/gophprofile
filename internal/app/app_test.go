@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-resty/resty/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -183,4 +185,40 @@ func TestOpenMetrics(t *testing.T) {
 	t.Setenv("OTEL_METRICS_EXPORTER", "nope")
 	_, err := app.Open(context.Background())
 	assert.ErrorContains(t, err, "OTEL_EXPORTER_OTLP_ENDPOINT")
+}
+
+func TestOpenLimits(t *testing.T) {
+	for _, c := range []struct{ key, value string }{
+		{"MAX_FILE_SIZE", "abc"},
+		{"MAX_FILE_SIZE", "0"},
+		{"MAX_FILE_SIZE", "10485761"},
+		{"ALLOWED_MIME_TYPES", "image/png,image/gif"},
+		{"ALLOWED_MIME_TYPES", "png"},
+		{"TRUSTED_PROXIES", "abc"},
+		{"TRUSTED_PROXIES", "-1"},
+	} {
+		t.Run(c.key+"="+c.value, func(t *testing.T) {
+			env(t, "amqp://guest:guest@127.0.0.1:1/")
+			t.Setenv(c.key, c.value)
+			_, err := app.Open(context.Background())
+			assert.ErrorContains(t, err, c.key, "значение %q", c.value)
+		})
+	}
+}
+
+func TestHandlerUploadLimit(t *testing.T) {
+	env(t, "amqp://guest:guest@127.0.0.1:1/")
+	t.Setenv("MAX_FILE_SIZE", "1048576")
+	t.Setenv("ALLOWED_MIME_TYPES", "image/png")
+	t.Setenv("TRUSTED_PROXIES", "1")
+	a, err := app.Open(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(a.Close)
+	srv := httptest.NewServer(a.Handler())
+	t.Cleanup(srv.Close)
+	resp, err := resty.New().R().SetHeader("X-User-ID", "alice").
+		SetFileReader("file", "big.png", bytes.NewReader(make([]byte, 2<<20))).Post(srv.URL + "/api/v1/avatars")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode())
+	assert.JSONEq(t, `{"error":"File too large","max_size":1048576}`, resp.String())
 }

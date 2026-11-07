@@ -24,53 +24,101 @@ GET    /web/gallery/{user_id}                 # галерея пользова�
 Пользователь передаётся в заголовке `X-User-ID`. Форматы jpeg, png и webp,
 файл до 10 МБ, с одного IP не больше 100 запросов в минуту.
 
+Спецификация API в формате Swagger 2.0 лежит в `api/swagger.yaml` и
+`api/swagger.json`. Её строит swag из аннотаций в `internal/api/routes.go`
+командой `go generate ./internal/api`.
+
 ## Запуск
+
+### Docker Compose
 
 Нужен Docker. Команды вызываются из корня репозитория.
 
 ```sh
-docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672, трейсы в Jaeger на http://127.0.0.1:16686, логи в OpenSearch Dashboards на http://127.0.0.1:5601, метрики в Prometheus на http://127.0.0.1:9090 и Grafana на http://127.0.0.1:3000, алерты в Alertmanager на http://127.0.0.1:9093
+docker compose up -d --build   # сервис на http://localhost:8080, RabbitMQ на http://127.0.0.1:15672
 docker compose down            # остановка с сохранением данных
 docker compose down -v         # остановка с удалением данных
 ```
 
+### Kubernetes
+
+Нужен Rancher Desktop с dockerd. Сервис отвечает на http://avatars.localhost.
+
+```sh
+docker build -t avatar-service:latest .
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+# без имени monitoring Prometheus не увидит ServiceMonitor чарта
+helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace --set alertmanager.enabled=false
+helm install gophprofile helm/gophprofile -n default -f helm/gophprofile/values-dev.yaml --timeout 10m \
+  --set secrets.postgresPassword=$(openssl rand -hex 16),secrets.minioPassword=$(openssl rand -hex 16),secrets.rabbitmqPassword=$(openssl rand -hex 16)
+# новый образ ставится только под новым тегом
+docker build -t avatar-service:v2 .
+helm upgrade gophprofile helm/gophprofile -n default -f helm/gophprofile/values-dev.yaml --reuse-values --set image.tag=v2 --timeout 10m
+# удаление вместе с данными Postgres, MinIO и RabbitMQ
+helm uninstall gophprofile -n default --wait
+```
+
+С `values-prod.yaml` пароли задаются теми же флагами `--set secrets.*`.
+
+## Архитектура
+
+```mermaid
+flowchart TB
+  client([Клиент]) -->|HTTP| ingctl
+  subgraph kube-system
+    ingctl[Ingress controller]
+  end
+  subgraph avatars["namespace avatars"]
+    ing[Ingress avatar-ingress] --> svc[Service avatar-service]
+    svc --> server["Deployment avatar-service (server)<br/>пробы /live и /health"]
+    hpa[HPA avatar-service-hpa] -.-> server
+    worker[Deployment avatar-worker]
+    job["Job avatar-migrate<br/>хук Helm post-install, pre-upgrade"]
+    collector[Deployment avatar-collector<br/>Service avatar-collector]
+    cm[ConfigMap avatar-config] -.-> server & worker
+    sec[Secret avatar-secrets] -.-> server & worker & job
+    sa[ServiceAccount avatar-service] -.-> server & worker
+    sm[ServiceMonitor avatar-service]
+    server & worker --> collector
+  end
+  ingctl --> ing
+  subgraph database["namespace database"]
+    pg[(StatefulSet postgres)]
+    minio[(StatefulSet minio)]
+    rabbit[(StatefulSet rabbitmq)]
+  end
+  server --> pg & minio & rabbit
+  worker --> pg & minio & rabbit
+  job --> pg
+  subgraph monitoring["namespace monitoring"]
+    prom[Prometheus kube-prometheus-stack]
+  end
+  sm -.-> collector
+  prom --> collector
+```
+
 ## Логи
 
-server и worker пишут JSON в stdout и через collector в OpenSearch. Порог задаёт `LOG_LEVEL`: `debug`, `info` (по умолчанию), `warn` или `error`.
-
-- Поиск по запросу: trace ID из Jaeger ищется в Discover OpenSearch Dashboards запросом `traceId:<trace ID>`. Поле `attributes.trace_id` записи `uploading avatar` хранится массивом байтов, по нему не ищется.
-- Фильтры: `severity.text` (уровень) и `resource.service.name` (`gophprofile-server` или `gophprofile-worker`).
-- Алерт на ошибки: монитор «Ошибки в логах» в разделе Alerting раз в минуту ищет записи ERROR за последние 5 минут. Проверка: загрузить файл с верным заголовком PNG, но обрезанными данными. Worker отправит событие в очередь недоставленных, и через минуту появится активный алерт.
+server и worker пишут JSON в stdout и через collector в OpenSearch Dashboards
+на http://127.0.0.1:5601. Уровень задаёт `LOG_LEVEL`: `debug`, `info`, `warn`
+или `error`. Записи одного запроса ищутся в Discover по trace ID из Jaeger на
+http://127.0.0.1:16686: `traceId:<trace ID>`. Монитор «Ошибки в логах» раз в
+минуту ищет записи ERROR.
 
 ## Метрики
 
-server и worker раз в 5 с отправляют метрики через collector, Prometheus снимает их с collector и глубину очередей с RabbitMQ. Grafana открывается без входа, дашборды лежат в папке GophProfile:
-
-- Service overview: главные панели остальных трёх.
-- RED: запросы, доля ответов 5xx и длительность HTTP по маршрутам.
-- Resources: CPU, память и горутины server и worker, пул Postgres и очереди RabbitMQ.
-- Business KPI: загрузки по статусу, время загрузки, занятое аватарками место.
-
-Проверка: загрузить аватарку и через 15 с выполнить в Prometheus запросы `avatars_uploads_total{status="success"}` и `avatars_storage_bytes{user_id="<пользователь>"}`. Счётчик вырастет на 1, место на размер файла. Неверный формат увеличит `status="rejected"`, сбой хранилища или брокера `status="error"`.
+Prometheus на http://127.0.0.1:9090 собирает метрики server и worker через
+collector и глубину очередей с RabbitMQ. В Grafana на http://127.0.0.1:3000 в
+папке GophProfile дашборды Service overview, RED, Resources и Business KPI.
 
 ## Алерты
 
-Prometheus раз в минуту проверяет правила из `alerts.yml` и отправляет сработавшие алерты в Alertmanager. Тот пересылает их и их снятие в заглушку `alert-webhook`, которая печатает каждое уведомление в свой лог:
+Prometheus проверяет правила из `alerts.yml` и отправляет алерты через
+Alertmanager на http://127.0.0.1:9093 в заглушку `alert-webhook`, уведомления
+видны в `docker compose logs -f alert-webhook`.
 
-- HighErrorRate (warning): больше 10% загрузок за 5 минут закончились ошибкой сервиса, держится 5 минут. Отклонённые файлы ошибкой не считаются.
-- HighResponseTime (critical): 95% загрузок за 5 минут дольше 5 с, держится 2 минуты.
-- ServiceDown (critical): server или worker не присылает метрики 1 минуту, имя сервиса в метке `job`.
-
-Алерты видны в Prometheus на вкладке Alerts, в Alertmanager и в логе заглушки: `docker compose logs -f alert-webhook`. CI проверяет правила командой `promtool test rules alerts.test.yml`.
-
-### Проверка алертов
-
-Сценарии со сбоем требуют потока загрузок. Его даёт цикл, который раз в 2 с загружает картинку `a.png`, его останавливает Ctrl+C:
-
-```sh
-while true; do curl -s -o /dev/null -w '%{http_code}\n' -H 'X-User-ID: alert-test' -F file=@a.png http://localhost:8080/api/v1/avatars; sleep 2; done
+```text
+HighErrorRate      # warning, больше 10% загрузок за 5 минут с ошибкой сервиса
+HighResponseTime   # critical, 95% загрузок за 5 минут дольше 5 с
+ServiceDown        # critical, server или worker 1 минуту не присылает метрики
 ```
-
-- Сбой базы: запустить цикл и `docker compose stop postgres`. Загрузки отвечают 500, примерно через 6 минут HighErrorRate переходит в firing, в логе заглушки появляется `"status": "firing"`. После `docker compose start postgres` алерт гаснет, когда ошибки выйдут из 5-минутного окна, это около 5 минут, и в логе появляется `"status": "resolved"`.
-- Остановка обработчика: `docker compose stop worker`, цикл не нужен. Примерно через 2 минуты ServiceDown с `job="gophprofile-worker"` переходит в firing. После `docker compose start worker` алерт гаснет меньше чем через минуту.
-- Медленное хранилище: запустить цикл и `docker compose pause minio`. Каждая загрузка ждёт ответа S3 30 с и заканчивается ошибкой. Примерно через 3–4 минуты HighResponseTime со `status="error"` переходит в firing, а через 6–7 минут и HighErrorRate. Квантиль показывает 10 с, верхнюю границу гистограммы. После `docker compose unpause minio` HighErrorRate гаснет примерно через 2 минуты, HighResponseTime примерно через 5.

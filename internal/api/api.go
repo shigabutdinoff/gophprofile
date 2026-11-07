@@ -1,4 +1,3 @@
-// Package api переводит запросы REST API аватарок в сценарии пакета avatar.
 package api
 
 import (
@@ -24,35 +23,36 @@ import (
 var errBadRequest = errors.New("неверный запрос")
 
 type handler struct {
-	svc *avatar.Service
+	svc   *avatar.Service
+	limit int
 }
 
-// New собирает обработчик маршрутов загрузки, чтения и удаления аватарок
-// над svc и веб приложения. Состояние служб отдаёт health.
-// С одного IP принимается не больше 100 запросов в минуту.
-func New(svc *avatar.Service, health http.Handler) http.Handler {
-	h := handler{svc: svc}
+// New собирает обработчик API над svc с загрузкой до size байт, веб
+// приложением и состоянием health. С IP не больше 100 запросов в минуту, при
+// proxies больше нуля IP берётся от прокси, пробы /live и /health без лимита.
+func New(svc *avatar.Service, health http.Handler, size, proxies int) http.Handler {
+	h := handler{svc: svc, limit: size}
 	upload := counted(h.upload)
 	r := chi.NewRouter()
 	// Постоянное имя сервера держит Host клиента вне меток метрик.
 	r.Use(otelhttp.NewMiddleware("http", otelhttp.WithServerName("gophprofile:8080"),
-		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/health" })))
-	r.Method(http.MethodGet, "/health", health)
-	r.Get("/", spa)
-	r.Get("/web/upload", spa)
-	r.Post("/web/upload", upload)
-	r.Get("/web/gallery/*", spa)
-	r.Post("/api/v1/avatars", upload)
-	r.Get("/api/v1/avatars/{id}", h.file)
-	r.Get("/api/v1/avatars/{id}/metadata", h.metadata)
-	r.Get("/api/v1/users/{user_id}/avatars", h.list)
-	r.Get("/api/v1/users/{user_id}/avatar", h.file)
-	r.Delete("/api/v1/avatars/{id}", h.remove)
-	r.Delete("/api/v1/users/{user_id}/avatar", h.remove)
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/health" && r.URL.Path != "/live" })))
+	h.routes(r, upload, health)
 	limit := httprate.LimitBy(100, time.Minute, func(r *http.Request) (string, error) {
 		return httprate.CanonicalizeIP(middleware.GetClientIP(r.Context())), nil
 	})
-	return middleware.ClientIPFromRemoteAddr(limit(http.MaxBytesHandler(r, avatar.MaxSize+(1<<20))))
+	limited := limit(http.MaxBytesHandler(r, int64(h.limit)+(1<<20)))
+	if proxies > 0 {
+		limited = middleware.ClientIPFromXFFTrustedProxies(proxies)(limited)
+	}
+	limited = middleware.ClientIPFromRemoteAddr(limited)
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/live" || req.URL.Path == "/health" {
+			r.ServeHTTP(w, req)
+			return
+		}
+		limited.ServeHTTP(w, req)
+	})
 }
 
 func counted(next http.HandlerFunc) http.HandlerFunc {
@@ -122,8 +122,6 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 			Error   string `json:"error"`
 			Details string `json:"details"`
 		}{"Invalid file format", "Supported formats: jpeg, png, webp"})
-	case errors.Is(err, avatar.ErrTooLarge):
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large", "max_size": avatar.MaxSize})
 	case errors.Is(err, avatar.ErrUserID), errors.Is(err, errBadRequest), errors.Is(err, avatar.ErrTooManyPixels):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, avatar.ErrUnavailable):

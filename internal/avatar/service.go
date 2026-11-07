@@ -10,15 +10,13 @@ import (
 	_ "image/png"
 	"log/slog"
 	"os"
+	"slices"
 	"time"
 	"uuid"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/image/riff"
-	"golang.org/x/image/vp8"
-	"golang.org/x/image/vp8l"
 	_ "golang.org/x/image/webp"
 )
 
@@ -63,12 +61,14 @@ type Service struct {
 	files     Storage
 	publisher Publisher
 	slot      chan struct{}
+	limit     int
+	mimes     []string
 }
 
 // New собирает сервис над метаданными repo, файлами files и брокером
-// publisher.
-func New(repo Repository, files Storage, publisher Publisher) *Service {
-	return &Service{repo: repo, files: files, publisher: publisher, slot: make(chan struct{}, 1)}
+// publisher. Загрузка принимает файлы до limit байт с MIME типами mimes.
+func New(repo Repository, files Storage, publisher Publisher, limit int, mimes []string) *Service {
+	return &Service{repo: repo, files: files, publisher: publisher, slot: make(chan struct{}, 1), limit: limit, mimes: mimes}
 }
 
 // Upload проверяет и сохраняет файл data с именем name пользователя userID.
@@ -78,14 +78,14 @@ func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) 
 	if !validUserID(userID) {
 		return Avatar{}, ErrUserID
 	}
-	if len(data) > MaxSize {
+	if len(data) > s.limit {
 		return Avatar{}, ErrTooLarge
 	}
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err == nil && format == "webp" {
 		err = sameFrame(data, cfg)
 	}
-	if err != nil || !ValidFormat(format) {
+	if err != nil || !slices.Contains(s.mimes, "image/"+format) {
 		return Avatar{}, ErrInvalidFormat
 	}
 	id := uuid.New().String()
@@ -118,38 +118,4 @@ func (s *Service) Upload(ctx context.Context, userID, name string, data []byte) 
 		return Avatar{}, end(span, s.rollback(ctx, a, err))
 	}
 	return a, end(span, nil)
-}
-
-func sameFrame(data []byte, cfg image.Config) error {
-	_, r, err := riff.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	for {
-		id, n, chunk, err := r.Next()
-		if err != nil {
-			return err
-		}
-		var frame image.Config
-		switch id {
-		case riff.FourCC{'V', 'P', '8', ' '}:
-			d := vp8.NewDecoder()
-			d.Init(chunk, int(n))
-			fh, err := d.DecodeFrameHeader()
-			if err != nil {
-				return err
-			}
-			frame.Width, frame.Height = fh.Width, fh.Height
-		case riff.FourCC{'V', 'P', '8', 'L'}:
-			if frame, err = vp8l.DecodeConfig(chunk); err != nil {
-				return err
-			}
-		default:
-			continue
-		}
-		if frame.Width != cfg.Width || frame.Height != cfg.Height {
-			return ErrInvalidFormat
-		}
-		return nil
-	}
 }

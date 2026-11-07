@@ -66,9 +66,10 @@ func TestSpanNames(t *testing.T) {
 func TestHealthNotTraced(t *testing.T) {
 	rec := recordSpans(t)
 	ok := func(context.Context) error { return nil }
-	srv := httptest.NewServer(api.New(nil, api.Health(map[string]func(context.Context) error{"postgres": ok})))
+	srv := httptest.NewServer(api.New(nil, api.Health(map[string]func(context.Context) error{"postgres": ok}), 0, 0))
 	t.Cleanup(srv.Close)
 	get(t, srv, "/health")
+	get(t, srv, "/live")
 	assert.Empty(t, rec.Ended(), "проверка состояния попала в трейсы")
 }
 

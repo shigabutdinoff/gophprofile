@@ -11,4 +11,5 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM alpine:3.24.3
 WORKDIR /app
 COPY --from=builder /out/ .
+COPY migrations ./migrations
 USER 65534:65534
