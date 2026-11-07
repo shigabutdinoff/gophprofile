@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/avast/retry-go/v5"
@@ -22,6 +23,18 @@ import (
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 )
 
+// Beat отметка жизни Run. Run отмечается раз в минуту и после каждого
+// события.
+type Beat struct{ at atomic.Pointer[time.Time] }
+
+// Live возвращает ошибку, если Run не запущен или не отмечался дольше 5 минут.
+func (b *Beat) Live(context.Context) error {
+	if at := b.at.Load(); at == nil || time.Since(*at) > 5*time.Minute {
+		return errors.New("обработка событий зависла")
+	}
+	return nil
+}
+
 // Service обрабатывает аватарки по событиям.
 type Service interface {
 	// HandleUploadEvent делает миниатюры аватарки по событию загрузки e.
@@ -34,14 +47,20 @@ type Service interface {
 
 // Run обрабатывает доставки deliveries сервисом svc, пока не отменён ctx
 // или не закрыт канал. Попытка длится не дольше 30 с. После отмены событие
-// доводится не дольше grace, а неподтверждённое брокер доставит снова.
-func Run(ctx context.Context, deliveries <-chan amqp.Delivery, svc Service, grace time.Duration) {
+// доводится не дольше grace, а неподтверждённое брокер доставит снова. Жизнь
+// отмечается в beat.
+func Run(ctx context.Context, deliveries <-chan amqp.Delivery, svc Service, grace time.Duration, beat *Beat) {
 	work, cancel := graceful(ctx, grace)
 	defer cancel()
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
 	for {
+		now := time.Now()
+		beat.at.Store(&now)
 		select {
 		case <-ctx.Done():
 			return
+		case <-tick.C:
 		case d, ok := <-deliveries:
 			if !ok {
 				return

@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "gophprofile.labels" . | nindent 4 }}
   annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ add (.Values.config.max_file_size | int64) 1048576 | quote }}
 spec:
   rules:
     - host: {{ .Values.ingress.host }}

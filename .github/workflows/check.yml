@@ -68,9 +68,9 @@ jobs:
       - run: |
           chart=helm/gophprofile
           secrets=secrets.postgresPassword=ci,secrets.minioPassword=ci,secrets.rabbitmqPassword=ci
-          helm lint "$chart" -f "$chart/values-dev.yaml"
+          helm lint "$chart" -f "$chart/values-dev.yaml" --set "$secrets"
           helm lint "$chart" -f "$chart/values-prod.yaml" --set "$secrets"
-          helm template gophprofile "$chart" -f "$chart/values-dev.yaml" > /dev/null
+          helm template gophprofile "$chart" -f "$chart/values-dev.yaml" --set "$secrets" > /dev/null
           helm template gophprofile "$chart" -f "$chart/values-prod.yaml" --set "$secrets" > /dev/null
           if helm template gophprofile "$chart" -f "$chart/values-prod.yaml" > /dev/null 2>&1; then
             echo "values-prod.yaml без паролей собирается" >&2

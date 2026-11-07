@@ -20,6 +20,7 @@ func setEnv(t *testing.T, rabbit string) {
 	t.Setenv("S3_ACCESS_KEY", "minio")
 	t.Setenv("S3_SECRET_KEY", "секрет")
 	t.Setenv("RABBITMQ_URL", rabbit)
+	t.Setenv("HTTP_ADDRESS", "127.0.0.1:0")
 }
 
 func TestRunMissing(t *testing.T) {
@@ -46,6 +47,12 @@ func TestRunStops(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		require.Fail(t, "обработчик не остановился")
 	}
+}
+
+func TestRunAddress(t *testing.T) {
+	setEnv(t, "")
+	t.Setenv("HTTP_ADDRESS", ":-1")
+	assert.ErrorContains(t, run(context.Background()), "HTTP_ADDRESS: ")
 }
 
 func TestMainFails(t *testing.T) {

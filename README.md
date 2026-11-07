@@ -49,16 +49,16 @@ docker build -t avatar-service:latest .
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 # без имени monitoring Prometheus не увидит ServiceMonitor чарта
 helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace --set alertmanager.enabled=false
-helm install gophprofile helm/gophprofile -n default -f helm/gophprofile/values-dev.yaml --timeout 10m
+helm install gophprofile helm/gophprofile -n default -f helm/gophprofile/values-dev.yaml --timeout 10m \
+  --set secrets.postgresPassword=$(openssl rand -hex 16),secrets.minioPassword=$(openssl rand -hex 16),secrets.rabbitmqPassword=$(openssl rand -hex 16)
 # новый образ ставится только под новым тегом
 docker build -t avatar-service:v2 .
-helm upgrade gophprofile helm/gophprofile -n default -f helm/gophprofile/values-dev.yaml --set image.tag=v2 --timeout 10m
+helm upgrade gophprofile helm/gophprofile -n default -f helm/gophprofile/values-dev.yaml --reuse-values --set image.tag=v2 --timeout 10m
 # удаление вместе с данными Postgres, MinIO и RabbitMQ
 helm uninstall gophprofile -n default --wait
 ```
 
-С `values-prod.yaml` пароли передаются флагами `--set secrets.postgresPassword=…`,
-`--set secrets.minioPassword=…` и `--set secrets.rabbitmqPassword=…`.
+С `values-prod.yaml` пароли задаются теми же флагами `--set secrets.*`.
 
 ## Архитектура
 

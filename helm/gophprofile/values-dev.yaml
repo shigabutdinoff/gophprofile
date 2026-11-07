@@ -9,9 +9,3 @@ autoscaling:
 
 config:
   log_level: "debug"
-
-# Пароли как в compose.yaml, только для локального кластера.
-secrets:
-  postgresPassword: avatars
-  minioPassword: minio-secret
-  rabbitmqPassword: avatars
