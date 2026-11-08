@@ -1,9 +1,7 @@
-// Package app собирает зависимости server и worker из переменных окружения
-// DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, RABBITMQ_URL,
-// LOG_LEVEL и OTEL_EXPORTER_OTLP_ENDPOINT, без неё телеметрия не уходит.
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,13 +20,11 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/contrib/processors/minsev"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/shigabutdinoff/gophprofile/internal/api"
 	"github.com/shigabutdinoff/gophprofile/internal/avatar"
 	"github.com/shigabutdinoff/gophprofile/internal/broker"
 	"github.com/shigabutdinoff/gophprofile/internal/postgres"
@@ -44,6 +39,8 @@ type App struct {
 	Broker *broker.Broker
 	db     *pgxpool.Pool
 	files  *storage.Client
+	size   int
+	trust  int
 	traces *sdktrace.TracerProvider
 	logs   *sdklog.LoggerProvider
 	meters *sdkmetric.MeterProvider
@@ -72,6 +69,10 @@ func Open(ctx context.Context) (*App, error) {
 	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("неверная S3_ENDPOINT %q, нужна схема %s или %s", endpoint, "http", "https")
 	}
+	size, trust, mimes, err := readLimits()
+	if err != nil {
+		return nil, err
+	}
 	cfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return nil, fmt.Errorf("DATABASE_URL: %w", err)
@@ -84,13 +85,13 @@ func Open(ctx context.Context) (*App, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost = 64
 	transport.ResponseHeaderTimeout = 30 * time.Second
-	files := storage.New(&http.Client{Transport: transport}, endpoint, os.Getenv("S3_ACCESS_KEY"), os.Getenv("S3_SECRET_KEY"))
+	files := storage.New(&http.Client{Transport: transport}, endpoint, os.Getenv("S3_ACCESS_KEY"), os.Getenv("S3_SECRET_KEY"), cmp.Or(os.Getenv("S3_BUCKET"), "avatars"))
 	b, err := broker.Open(os.Getenv("RABBITMQ_URL"))
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("RABBITMQ_URL: %w", err)
 	}
-	a := &App{Service: avatar.New(postgres.New(db), files, b), Broker: b, db: db, files: files}
+	a := &App{Service: avatar.New(postgres.New(db), files, b, size, mimes), Broker: b, db: db, files: files, size: size, trust: trust}
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
 		return a, nil
@@ -123,16 +124,6 @@ func Open(ctx context.Context) (*App, error) {
 	return a, nil
 }
 
-// MeterStorage отдаёт в метрики место, занятое аватарками пользователей.
-func (a *App) MeterStorage() error {
-	return postgres.New(a.db).ObserveStorage(otel.Meter("gophprofile"))
-}
-
-// Health отдаёт состояние Postgres, S3 и RabbitMQ.
-func (a *App) Health() http.Handler {
-	return api.Health(map[string]func(context.Context) error{"postgres": a.db.Ping, "s3": a.files.Ping, "rabbitmq": a.Broker.Ping})
-}
-
 // Close закрывает подключения и отправляет оставшиеся трейсы, логи и
 // метрики не дольше 5 с.
 func (a *App) Close() {
@@ -145,17 +136,4 @@ func (a *App) Close() {
 		_ = a.logs.Shutdown(ctx)
 		_ = a.meters.Shutdown(ctx)
 	}
-}
-
-// validUTF8 чинит строковые атрибуты спана из запроса: один невалидный байт
-// UTF-8 ломает отправку всего пакета трейсов.
-type validUTF8 struct{ sdktrace.SpanProcessor }
-
-func (p validUTF8) OnStart(ctx context.Context, s sdktrace.ReadWriteSpan) {
-	for _, kv := range s.Attributes() {
-		if v := kv.Value.AsString(); kv.Value.Type() == attribute.STRING && !utf8.ValidString(v) {
-			s.SetAttributes(kv.Key.String(strings.ToValidUTF8(v, "\uFFFD")))
-		}
-	}
-	p.SpanProcessor.OnStart(ctx, s)
 }

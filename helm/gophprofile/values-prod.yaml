@@ -1,0 +1,24 @@
+ingress:
+  host: avatars.example.com
+
+replicaCount: 3
+workerReplicas: 2
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
+
+autoscaling:
+  minReplicas: 3
+  maxReplicas: 10
+
+postgres:
+  storage: 10Gi
+minio:
+  storage: 20Gi
+rabbitmq:
+  storage: 5Gi

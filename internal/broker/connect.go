@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"uuid"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
@@ -44,4 +45,23 @@ func headers(ctx context.Context) amqp.Table {
 		table[k] = v
 	}
 	return table
+}
+
+func (b *Broker) send(ctx context.Context, exchange, key string, body []byte) (struct{}, error) {
+	ch, err := b.channel()
+	if err != nil {
+		return struct{}{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, confirm)
+	defer cancel()
+	conf, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchange, key, false, false, amqp.Publishing{
+		ContentType: "application/json", DeliveryMode: amqp.Persistent, MessageId: uuid.New().String(), Body: body, Headers: headers(ctx)})
+	if err != nil {
+		return struct{}{}, err
+	}
+	ok, err := conf.WaitContext(ctx)
+	if err == nil && !ok {
+		err = errNack
+	}
+	return struct{}{}, err
 }

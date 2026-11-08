@@ -27,7 +27,7 @@ func (h handler) upload(w http.ResponseWriter, r *http.Request) {
 		data, err = io.ReadAll(file)
 	}
 	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
-		fail(w, r, avatar.ErrTooLarge)
+		h.tooLarge(w)
 		return
 	}
 	if err != nil {
@@ -35,11 +35,19 @@ func (h handler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, err := h.svc.Upload(r.Context(), r.Header.Get("X-User-ID"), head.Filename, data)
+	if errors.Is(err, avatar.ErrTooLarge) {
+		h.tooLarge(w)
+		return
+	}
 	if err != nil {
 		fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, created{a.ID, a.UserID, "/api/v1/avatars/" + a.ID, a.Status, stamp(a.CreatedAt)})
+}
+
+func (h handler) tooLarge(w http.ResponseWriter) {
+	writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large", "max_size": h.limit})
 }
 
 func userID(r *http.Request) string {

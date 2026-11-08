@@ -105,7 +105,7 @@ func etag(data []byte) string {
 func start(t *testing.T) (*httptest.Server, *memory) {
 	t.Helper()
 	m := &memory{objects: map[string][]byte{}, gone: map[string]bool{}}
-	srv := httptest.NewServer(api.New(avatar.New(m, files{m}, m), http.NotFoundHandler()))
+	srv := httptest.NewServer(api.New(avatar.New(m, files{m}, m, avatar.MaxSize, []string{"image/jpeg", "image/png", "image/webp"}), http.NotFoundHandler(), avatar.MaxSize, 0))
 	t.Cleanup(srv.Close)
 	return srv, m
 }
@@ -130,6 +130,8 @@ func send(t *testing.T, req *resty.Request, method, url string) (*resty.Response
 	t.Helper()
 	resp, err := req.Execute(method, url)
 	require.NoError(t, err, "сервер не ответил")
+	err = checkResponse(resp.Request.RawRequest, resp.StatusCode(), resp.Header(), resp.Body())
+	require.NoError(t, err, "ответ %s %s не по описанию", method, url)
 	return resp, resp.Body()
 }
 
@@ -332,7 +334,7 @@ func TestHealth(t *testing.T) {
 	broken := errors.New("секретный адрес 10.0.0.1")
 	ok := func(context.Context) error { return nil }
 	srv := httptest.NewServer(api.New(nil, api.Health(map[string]func(context.Context) error{
-		"postgres": ok, "rabbitmq": ok, "s3": func(context.Context) error { return broken }})))
+		"postgres": ok, "rabbitmq": ok, "s3": func(context.Context) error { return broken }}), avatar.MaxSize, 0))
 	t.Cleanup(srv.Close)
 	resp, body := get(t, srv, "/health")
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode())
@@ -400,10 +402,10 @@ func TestDeleteUnavailable(t *testing.T) {
 func TestRateLimit(t *testing.T) {
 	srv, _ := start(t)
 	for range 100 {
-		resp, _ := get(t, srv, "/health")
+		resp, _ := get(t, srv, "/nope")
 		require.Equal(t, http.StatusNotFound, resp.StatusCode())
 	}
-	resp, _ := get(t, srv, "/health")
+	resp, _ := get(t, srv, "/nope")
 	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode(), "101-й запрос с одного IP")
 }
 
@@ -447,4 +449,70 @@ func TestWebGallery(t *testing.T) {
 		assert.Equal(t, "text/html; charset=utf-8", resp.Header().Get("Content-Type"), path)
 		assert.Equal(t, root, body, "ожидалось то же приложение по %s", path)
 	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	srv := httptest.NewServer(api.New(nil, http.NotFoundHandler(), avatar.MaxSize, 1))
+	t.Cleanup(srv.Close)
+	for range 80 {
+		for _, ip := range []string{"10.1.0.1", "10.1.0.2"} {
+			resp, _ := get(t, srv, "/nope", "X-Forwarded-For", "1.1.1.1, "+ip)
+			require.Equal(t, http.StatusNotFound, resp.StatusCode(), "клиент %s получил отказ", ip)
+		}
+	}
+	for range 20 {
+		get(t, srv, "/nope", "X-Forwarded-For", "10.1.0.1")
+	}
+	resp, _ := get(t, srv, "/nope", "X-Forwarded-For", "10.1.0.1")
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode(), "101-й запрос клиента")
+	resp, _ = get(t, srv, "/nope", "X-Forwarded-For", "10.1.0.2")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode(), "второй клиент получил чужой отказ")
+}
+
+func TestForwardedIgnoredWithoutProxies(t *testing.T) {
+	srv, _ := start(t)
+	for i := range 100 {
+		resp, _ := get(t, srv, "/nope", "X-Forwarded-For", fmt.Sprintf("10.2.0.%d", i))
+		require.Equal(t, http.StatusNotFound, resp.StatusCode())
+	}
+	resp, _ := get(t, srv, "/nope", "X-Forwarded-For", "10.2.1.1")
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode(), "поддельный X-Forwarded-For обошёл лимит")
+}
+
+func TestLive(t *testing.T) {
+	srv := httptest.NewServer(api.New(nil, http.NotFoundHandler(), avatar.MaxSize, 0))
+	t.Cleanup(srv.Close)
+	resp, body := get(t, srv, "/live")
+	assert.Equal(t, http.StatusOK, resp.StatusCode())
+	assert.Empty(t, body)
+}
+
+func TestUploadLimit(t *testing.T) {
+	m := &memory{objects: map[string][]byte{}, gone: map[string]bool{}}
+	srv := httptest.NewServer(api.New(avatar.New(m, files{m}, m, 1<<20, []string{"image/png"}), http.NotFoundHandler(), 1<<20, 0))
+	t.Cleanup(srv.Close)
+	resp, got := upload(t, srv, "alice", "big.png", pngBytes(t, 1, 1, 2<<20))
+	expect(t, resp, got, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large", "max_size": float64(1 << 20)})
+	resp, got = upload(t, srv, "alice", "mid.png", pngBytes(t, 1, 1, (1<<20)-200))
+	assert.Equal(t, http.StatusCreated, resp.StatusCode(), "файл в пределах лимита не принят, ответ %s", got)
+	resp, got = upload(t, srv, "alice", "big.png", pngBytes(t, 1, 1, (1<<20)+100))
+	expect(t, resp, got, http.StatusRequestEntityTooLarge, map[string]any{"error": "File too large", "max_size": float64(1 << 20)})
+}
+
+func TestProbesBypassLimit(t *testing.T) {
+	h := api.New(nil, http.NotFoundHandler(), avatar.MaxSize, 1)
+	call := func(path, peer string) int {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = peer + ":1234"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for range 100 {
+		require.Equal(t, http.StatusNotFound, call("/nope", "10.42.5.9"))
+	}
+	assert.Equal(t, http.StatusTooManyRequests, call("/nope", "10.42.5.9"), "101-й запрос без X-Forwarded-For")
+	assert.Equal(t, http.StatusNotFound, call("/nope", "10.42.5.10"), "чужой адрес без X-Forwarded-For получил отказ")
+	assert.Equal(t, http.StatusOK, call("/live", "10.42.5.9"), "проба liveness получила отказ")
+	assert.Equal(t, http.StatusNotFound, call("/health", "10.42.5.9"), "проба readiness получила отказ")
 }

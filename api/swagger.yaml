@@ -1,0 +1,598 @@
+basePath: /
+definitions:
+  api.created:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      status:
+        $ref: '#/definitions/avatar.Status'
+      url:
+        type: string
+      user_id:
+        type: string
+    type: object
+  api.metadata:
+    properties:
+      created_at:
+        type: string
+      dimensions:
+        $ref: '#/definitions/avatar.Dimensions'
+      file_name:
+        type: string
+      id:
+        type: string
+      mime_type:
+        type: string
+      size:
+        type: integer
+      status:
+        $ref: '#/definitions/avatar.Status'
+      thumbnails:
+        items:
+          $ref: '#/definitions/api.thumbnail'
+        type: array
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  api.thumbnail:
+    properties:
+      size:
+        type: string
+      url:
+        type: string
+    type: object
+  avatar.Dimensions:
+    properties:
+      height:
+        description: Height содержит высоту в пикселях.
+        type: integer
+      width:
+        description: Width содержит ширину в пикселях.
+        type: integer
+    type: object
+  avatar.Status:
+    enum:
+    - processing
+    - completed
+    - failed
+    type: string
+    x-enum-varnames:
+    - StatusProcessing
+    - StatusCompleted
+    - StatusFailed
+info:
+  contact: {}
+  description: |-
+    Сервис хранит аватарки пользователей и раздаёт их другим сайтам. Пользователь передаётся
+    в заголовке X-User-ID. С одного IP не больше 100 запросов в минуту, кроме /health.
+  license:
+    name: MIT
+  title: GophProfile
+  version: "1.0"
+paths:
+  /api/v1/avatars:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Принимает jpeg, png или webp до 10 МБ в поле file или image формы.
+      parameters:
+      - description: Владелец
+        in: header
+        name: X-User-ID
+        required: true
+        type: string
+      - description: Картинка
+        in: formData
+        name: file
+        type: file
+      - description: Картинка, если нет file
+        in: formData
+        name: image
+        type: file
+      produces:
+      - application/json
+      - text/plain
+      responses:
+        "201":
+          description: Аватарка принята, миниатюры в работе
+          schema:
+            $ref: '#/definitions/api.created'
+        "400":
+          description: Неверный запрос или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "413":
+          description: Файл больше лимита
+          schema:
+            properties:
+              error:
+                type: string
+              max_size:
+                type: integer
+            type: object
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+        "500":
+          description: Неверный запрос или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "503":
+          description: Неверный запрос или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+      summary: Загрузка аватарки
+      tags:
+      - avatars
+  /api/v1/avatars/{id}:
+    delete:
+      description: Удаляет свою аватарку вместе с миниатюрами.
+      parameters:
+      - description: Владелец
+        in: header
+        name: X-User-ID
+        required: true
+        type: string
+      - description: Аватарка
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      - text/plain
+      responses:
+        "204":
+          description: Удалена
+        "400":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "403":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "404":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+        "500":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "503":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+      summary: Удаление аватарки
+      tags:
+      - avatars
+    get:
+      description: Оригинал или миниатюра, при format в другом формате. Кэш на сутки.
+      parameters:
+      - description: Аватарка
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Размер
+        enum:
+        - original
+        - 100x100
+        - 300x300
+        in: query
+        name: size
+        type: string
+      - description: Формат
+        enum:
+        - jpeg
+        - png
+        - webp
+        in: query
+        name: format
+        type: string
+      produces:
+      - image/png
+      - image/jpeg
+      - image/webp
+      - application/json
+      - text/plain
+      responses:
+        "200":
+          description: Картинка
+          headers:
+            Cache-Control:
+              description: max-age=86400
+              type: string
+            ETag:
+              description: Хеш содержимого
+              type: string
+          schema:
+            type: file
+        "304":
+          description: Не изменилась с If-None-Match
+        "400":
+          description: Неверный запрос, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "404":
+          description: Неверный запрос, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+        "500":
+          description: Неверный запрос, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+      summary: Файл аватарки
+      tags:
+      - avatars
+  /api/v1/avatars/{id}/metadata:
+    get:
+      parameters:
+      - description: Аватарка
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      - text/plain
+      responses:
+        "200":
+          description: Размеры, формат, статус и миниатюры
+          schema:
+            $ref: '#/definitions/api.metadata'
+        "404":
+          description: Нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+        "500":
+          description: Нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+      summary: Метаданные аватарки
+      tags:
+      - avatars
+  /api/v1/users/{user_id}/avatar:
+    delete:
+      parameters:
+      - description: Владелец
+        in: header
+        name: X-User-ID
+        required: true
+        type: string
+      - description: Пользователь
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      - text/plain
+      responses:
+        "204":
+          description: Удалена
+        "400":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "403":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "404":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+        "500":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "503":
+          description: Чужая, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+      summary: Удаление текущей аватарки
+      tags:
+      - users
+    get:
+      description: Последняя загруженная аватарка пользователя, без кэша.
+      parameters:
+      - description: Пользователь
+        in: path
+        name: user_id
+        required: true
+        type: string
+      - description: Размер
+        enum:
+        - original
+        - 100x100
+        - 300x300
+        in: query
+        name: size
+        type: string
+      - description: Формат
+        enum:
+        - jpeg
+        - png
+        - webp
+        in: query
+        name: format
+        type: string
+      produces:
+      - image/png
+      - image/jpeg
+      - image/webp
+      - application/json
+      - text/plain
+      responses:
+        "200":
+          description: Картинка
+          headers:
+            Cache-Control:
+              description: no-cache
+              type: string
+            ETag:
+              description: Хеш содержимого
+              type: string
+          schema:
+            type: file
+        "304":
+          description: Не изменилась с If-None-Match
+        "400":
+          description: Неверный запрос, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "404":
+          description: Неверный запрос, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+        "500":
+          description: Неверный запрос, нет аватарки или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+      summary: Текущая аватарка
+      tags:
+      - users
+  /api/v1/users/{user_id}/avatars:
+    get:
+      parameters:
+      - description: Пользователь
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      - text/plain
+      responses:
+        "200":
+          description: Все аватарки, новые первыми
+          schema:
+            items:
+              $ref: '#/definitions/api.metadata'
+            type: array
+        "400":
+          description: Неверный запрос или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+        "500":
+          description: Неверный запрос или сбой
+          schema:
+            properties:
+              details:
+                type: string
+              error:
+                type: string
+            type: object
+      summary: Аватарки пользователя
+      tags:
+      - users
+  /health:
+    get:
+      description: Проверяет Postgres, S3 и RabbitMQ. 503, если хотя бы одна служба
+        недоступна.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Все службы доступны
+          schema:
+            properties:
+              details:
+                type: object
+              status:
+                type: string
+            type: object
+        "503":
+          description: Служба недоступна
+          schema:
+            properties:
+              details:
+                type: object
+              status:
+                type: string
+            type: object
+      summary: Состояние сервиса
+      tags:
+      - health
+  /web/gallery/{user_id}:
+    get:
+      parameters:
+      - description: Пользователь
+        in: path
+        name: user_id
+        required: true
+        type: string
+      produces:
+      - text/html
+      - text/plain
+      responses:
+        "200":
+          description: Веб приложение
+          schema:
+            type: string
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+      summary: Галерея пользователя
+      tags:
+      - web
+  /web/upload:
+    get:
+      produces:
+      - text/html
+      - text/plain
+      responses:
+        "200":
+          description: Веб приложение
+          schema:
+            type: string
+        "429":
+          description: Больше 100 запросов в минуту
+          schema:
+            type: string
+      summary: Страница загрузки
+      tags:
+      - web
+swagger: "2.0"

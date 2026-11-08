@@ -1,5 +1,7 @@
 // Package broker передаёт события аватарок через RabbitMQ. Соединение
 // открывается при первом обращении и переоткрывается после разрыва.
+// После 6 сбоев публикации подряд события 60 с отклоняются сразу. Отмена
+// публикации вызывающим и занятое другим вызовом подключение сбоем не считаются.
 package broker
 
 import (
@@ -8,9 +10,9 @@ import (
 	"errors"
 	"sync"
 	"time"
-	"uuid"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/sony/gobreaker/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -41,6 +43,7 @@ type Broker struct {
 	conn   *amqp.Connection
 	ch     *amqp.Channel
 	closed bool
+	cb     *gobreaker.CircuitBreaker[struct{}]
 }
 
 // Open проверяет адрес url. Подключение к RabbitMQ и объявление очередей
@@ -49,7 +52,7 @@ func Open(url string) (*Broker, error) {
 	if _, err := amqp.ParseURI(url); err != nil {
 		return nil, errors.New("неверный адрес")
 	}
-	return &Broker{url: url}, nil
+	return &Broker{url: url, cb: gobreaker.NewCircuitBreaker[struct{}](gobreaker.Settings{IsExcluded: excluded})}, nil
 }
 
 func (b *Broker) channel() (*amqp.Channel, error) {
@@ -99,23 +102,11 @@ func (b *Broker) Publish(ctx context.Context, exchange, key string, event any) (
 	if err != nil {
 		return err
 	}
-	ch, err := b.channel()
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(ctx, confirm)
-	defer cancel()
-	conf, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchange, key, false, false, amqp.Publishing{
-		ContentType: "application/json", DeliveryMode: amqp.Persistent, MessageId: uuid.New().String(), Body: body, Headers: headers(ctx)})
-	if err != nil {
-		return err
-	}
-	ok, err := conf.WaitContext(ctx)
-	if err == nil && !ok {
-		err = errNack
-	}
+	_, err = b.cb.Execute(func() (struct{}, error) { return b.send(ctx, exchange, key, body) })
 	return err
 }
+
+func excluded(err error) bool { return errors.Is(err, context.Canceled) || errors.Is(err, errDialing) }
 
 // Consume возвращает доставки событий с ручным подтверждением.
 // Канал доставок закрывается при разрыве соединения.

@@ -1,0 +1,898 @@
+{
+    "swagger": "2.0",
+    "info": {
+        "description": "Сервис хранит аватарки пользователей и раздаёт их другим сайтам. Пользователь передаётся\nв заголовке X-User-ID. С одного IP не больше 100 запросов в минуту, кроме /health.",
+        "title": "GophProfile",
+        "contact": {},
+        "license": {
+            "name": "MIT"
+        },
+        "version": "1.0"
+    },
+    "basePath": "/",
+    "paths": {
+        "/api/v1/avatars": {
+            "post": {
+                "description": "Принимает jpeg, png или webp до 10 МБ в поле file или image формы.",
+                "consumes": [
+                    "multipart/form-data"
+                ],
+                "produces": [
+                    "application/json",
+                    "text/plain"
+                ],
+                "tags": [
+                    "avatars"
+                ],
+                "summary": "Загрузка аватарки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Владелец",
+                        "name": "X-User-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "file",
+                        "description": "Картинка",
+                        "name": "file",
+                        "in": "formData"
+                    },
+                    {
+                        "type": "file",
+                        "description": "Картинка, если нет file",
+                        "name": "image",
+                        "in": "formData"
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Аватарка принята, миниатюры в работе",
+                        "schema": {
+                            "$ref": "#/definitions/api.created"
+                        }
+                    },
+                    "400": {
+                        "description": "Неверный запрос или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "413": {
+                        "description": "Файл больше лимита",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "max_size": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Неверный запрос или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Неверный запрос или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/avatars/{id}": {
+            "get": {
+                "description": "Оригинал или миниатюра, при format в другом формате. Кэш на сутки.",
+                "produces": [
+                    "image/png",
+                    "image/jpeg",
+                    "image/webp",
+                    "application/json",
+                    "text/plain"
+                ],
+                "tags": [
+                    "avatars"
+                ],
+                "summary": "Файл аватарки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Аватарка",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "original",
+                            "100x100",
+                            "300x300"
+                        ],
+                        "type": "string",
+                        "description": "Размер",
+                        "name": "size",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "jpeg",
+                            "png",
+                            "webp"
+                        ],
+                        "type": "string",
+                        "description": "Формат",
+                        "name": "format",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Картинка",
+                        "schema": {
+                            "type": "file"
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "max-age=86400"
+                            },
+                            "ETag": {
+                                "type": "string",
+                                "description": "Хеш содержимого"
+                            }
+                        }
+                    },
+                    "304": {
+                        "description": "Не изменилась с If-None-Match"
+                    },
+                    "400": {
+                        "description": "Неверный запрос, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Неверный запрос, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Неверный запрос, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Удаляет свою аватарку вместе с миниатюрами.",
+                "produces": [
+                    "application/json",
+                    "text/plain"
+                ],
+                "tags": [
+                    "avatars"
+                ],
+                "summary": "Удаление аватарки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Владелец",
+                        "name": "X-User-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Аватарка",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Удалена"
+                    },
+                    "400": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/avatars/{id}/metadata": {
+            "get": {
+                "produces": [
+                    "application/json",
+                    "text/plain"
+                ],
+                "tags": [
+                    "avatars"
+                ],
+                "summary": "Метаданные аватарки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Аватарка",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Размеры, формат, статус и миниатюры",
+                        "schema": {
+                            "$ref": "#/definitions/api.metadata"
+                        }
+                    },
+                    "404": {
+                        "description": "Нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{user_id}/avatar": {
+            "get": {
+                "description": "Последняя загруженная аватарка пользователя, без кэша.",
+                "produces": [
+                    "image/png",
+                    "image/jpeg",
+                    "image/webp",
+                    "application/json",
+                    "text/plain"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Текущая аватарка",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Пользователь",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "enum": [
+                            "original",
+                            "100x100",
+                            "300x300"
+                        ],
+                        "type": "string",
+                        "description": "Размер",
+                        "name": "size",
+                        "in": "query"
+                    },
+                    {
+                        "enum": [
+                            "jpeg",
+                            "png",
+                            "webp"
+                        ],
+                        "type": "string",
+                        "description": "Формат",
+                        "name": "format",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Картинка",
+                        "schema": {
+                            "type": "file"
+                        },
+                        "headers": {
+                            "Cache-Control": {
+                                "type": "string",
+                                "description": "no-cache"
+                            },
+                            "ETag": {
+                                "type": "string",
+                                "description": "Хеш содержимого"
+                            }
+                        }
+                    },
+                    "304": {
+                        "description": "Не изменилась с If-None-Match"
+                    },
+                    "400": {
+                        "description": "Неверный запрос, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Неверный запрос, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Неверный запрос, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "produces": [
+                    "application/json",
+                    "text/plain"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Удаление текущей аватарки",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Владелец",
+                        "name": "X-User-ID",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Пользователь",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Удалена"
+                    },
+                    "400": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Чужая, нет аватарки или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/users/{user_id}/avatars": {
+            "get": {
+                "produces": [
+                    "application/json",
+                    "text/plain"
+                ],
+                "tags": [
+                    "users"
+                ],
+                "summary": "Аватарки пользователя",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Пользователь",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Все аватарки, новые первыми",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/api.metadata"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Неверный запрос или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Неверный запрос или сбой",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "string"
+                                },
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/health": {
+            "get": {
+                "description": "Проверяет Postgres, S3 и RabbitMQ. 503, если хотя бы одна служба недоступна.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "health"
+                ],
+                "summary": "Состояние сервиса",
+                "responses": {
+                    "200": {
+                        "description": "Все службы доступны",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "object"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Служба недоступна",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "details": {
+                                    "type": "object"
+                                },
+                                "status": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/web/gallery/{user_id}": {
+            "get": {
+                "produces": [
+                    "text/html",
+                    "text/plain"
+                ],
+                "tags": [
+                    "web"
+                ],
+                "summary": "Галерея пользователя",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Пользователь",
+                        "name": "user_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Веб приложение",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/web/upload": {
+            "get": {
+                "produces": [
+                    "text/html",
+                    "text/plain"
+                ],
+                "tags": [
+                    "web"
+                ],
+                "summary": "Страница загрузки",
+                "responses": {
+                    "200": {
+                        "description": "Веб приложение",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "429": {
+                        "description": "Больше 100 запросов в минуту",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "definitions": {
+        "api.created": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/avatar.Status"
+                },
+                "url": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.metadata": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "dimensions": {
+                    "$ref": "#/definitions/avatar.Dimensions"
+                },
+                "file_name": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "mime_type": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                },
+                "status": {
+                    "$ref": "#/definitions/avatar.Status"
+                },
+                "thumbnails": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.thumbnail"
+                    }
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.thumbnail": {
+            "type": "object",
+            "properties": {
+                "size": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "avatar.Dimensions": {
+            "type": "object",
+            "properties": {
+                "height": {
+                    "description": "Height содержит высоту в пикселях.",
+                    "type": "integer"
+                },
+                "width": {
+                    "description": "Width содержит ширину в пикселях.",
+                    "type": "integer"
+                }
+            }
+        },
+        "avatar.Status": {
+            "type": "string",
+            "enum": [
+                "processing",
+                "completed",
+                "failed"
+            ],
+            "x-enum-varnames": [
+                "StatusProcessing",
+                "StatusCompleted",
+                "StatusFailed"
+            ]
+        }
+    }
+}

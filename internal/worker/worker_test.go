@@ -160,16 +160,19 @@ func TestHandleFailures(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
+	beat := &Beat{}
+	require.Error(t, beat.Live(context.Background()), "worker жив до запуска")
 	deliveries := make(chan amqp.Delivery, 1)
 	a := &acks{}
 	deliveries <- amqp.Delivery{Acknowledger: a, Body: []byte(event)}
 	close(deliveries)
-	Run(context.Background(), deliveries, &service{}, time.Second)
+	Run(context.Background(), deliveries, &service{}, time.Second, beat)
 	assert.Equal(t, 1, a.acked)
+	assert.NoError(t, beat.Live(context.Background()), "отметка жизни не записана")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan struct{})
-	go func() { Run(ctx, make(chan amqp.Delivery), &service{}, time.Second); close(done) }()
+	go func() { Run(ctx, make(chan amqp.Delivery), &service{}, time.Second, beat); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
